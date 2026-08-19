@@ -472,7 +472,7 @@
     <div id="criticidadeBlock"></div>
     <div class="btn-row">
       <button class="btn accent" id="downloadBtn">↓ Baixar Analise.xlsx</button>
-      <button class="btn" id="sharepointBtn" style="background:#fff; color:var(--text-dark); border:1px solid var(--line);">☁ Salvar no SharePoint</button>
+      <button class="btn" id="sharepointBtn" style="background:#fff; color:var(--text-dark); border:1px solid var(--line);">💾 Salvar na pasta sincronizada</button>
       <button class="btn" id="resetBtn" style="background:#fff; color:var(--text-dark); border:1px solid var(--line);">Processar outro conjunto de arquivos</button>
     </div>
     <p class="status" id="sharepointStatus" style="margin-top:8px;"></p>
@@ -643,144 +643,81 @@
   // escopos que já são auto-aprovados, o login funciona sem precisar de ninguém da TI — a
   // única troca é que o token expira em ~1h e a pessoa loga de novo (rapidinho, popup) se
   // for salvar depois disso.
-  const OAUTH_CONFIG = {
-    clientId: '19e62ac1-42fd-4d11-9d91-9c8702f91496',
-    tenantId: '87bbe9de-a892-4cde-a466-88f982fbc490',
-    scopes: 'openid Files.ReadWrite User.Read', // sem offline_access de propósito
-  };
+  // ---- Salvar na pasta sincronizada (File System Access API, nativo do navegador) ----
+  // Sem login, sem token, sem aprovação de administrador nenhuma: a pessoa escolhe (só na
+  // primeira vez, se o navegador lembrar) uma pasta do PRÓPRIO computador, e a ferramenta
+  // escreve o arquivo direto nela. Só funciona de verdade como "salvar no SharePoint" se
+  // essa pasta escolhida for uma pasta sincronizada do OneDrive (Adicionar atalho ao
+  // OneDrive, no SharePoint) — nesse caso, o que for escrito aqui sobe sozinho pro
+  // SharePoint de verdade, e fica visível pra todo mundo que já tem acesso a ela lá.
+  //
+  // (Cheguei a implementar um caminho alternativo com login Microsoft direto — OAuth2 +
+  // PKCE, escrevendo via Microsoft Graph — que funcionaria de qualquer computador sem
+  // precisar sincronizar nada. Mas esse caminho esbarrou numa política do tenant da ANTT
+  // que exige aprovação de administrador pra QUALQUER app novo pedir consentimento de
+  // usuário, então fica pra trás por enquanto — reativar é rápido se um dia aparecer
+  // alguém que possa aprovar.)
+  const NOME_PASTA_ARMAZENADA = 'pastaSalvarSegmentosCriticos';
 
-  function base64UrlEncode(bytes){
-    let bin = '';
-    bytes.forEach(b=> bin += String.fromCharCode(b));
-    return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-  }
-  async function gerarPkce(){
-    const verifier = base64UrlEncode(crypto.getRandomValues(new Uint8Array(32)));
-    const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
-    const challenge = base64UrlEncode(new Uint8Array(hash));
-    return {verifier, challenge};
+  function suportaFileSystemAccess(){
+    return typeof window.showDirectoryPicker === 'function';
   }
 
-  // Abre o popup de login, fica de olho na URL dele a cada 300ms (só consegue ler quando
-  // ele já voltou pro nosso próprio domínio — enquanto está no domínio da Microsoft,
-  // ler popup.location.href lança erro de cross-origin, que a gente simplesmente ignora e
-  // tenta de novo no próximo tick) e extrai o "code" da resposta.
-  function abrirPopupEEsperarCodigo(authUrl, redirectUri, stateEsperado){
+  // Guarda a referência da pasta escolhida no IndexedDB (não dá pra guardar isso num
+  // simples localStorage — só serializando via IndexedDB o navegador permite reidratar um
+  // FileSystemDirectoryHandle depois), pra não pedir de novo toda vez.
+  function abrirIndexedDbPasta(){
     return new Promise((resolve, reject)=>{
-      const popup = window.open(authUrl, 'loginMicrosoft', 'width=500,height=650');
-      if(!popup){ reject(new Error('o navegador bloqueou o popup de login — permite popups pra essa página e tenta de novo')); return; }
-      const timer = setInterval(()=>{
-        if(popup.closed){ clearInterval(timer); reject(new Error('janela de login fechada antes de terminar')); return; }
-        let url;
-        try{ url = popup.location.href; }catch(e){ return; } // ainda no domínio da Microsoft — normal, tenta de novo
-        if(url.indexOf(redirectUri) === 0){
-          clearInterval(timer);
-          const params = new URLSearchParams(new URL(url).search);
-          popup.close();
-          if(params.get('state') !== stateEsperado){ reject(new Error('resposta de login não bateu (state divergente) — tenta de novo')); return; }
-          if(params.get('error')){ reject(new Error(params.get('error_description')||params.get('error'))); return; }
-          resolve(params.get('code'));
-        }
-      }, 300);
+      const req = indexedDB.open('gerador_pq_pastas', 1);
+      req.onupgradeneeded = ()=> req.result.createObjectStore('handles');
+      req.onsuccess = ()=> resolve(req.result);
+      req.onerror = ()=> reject(req.error);
+    });
+  }
+  async function salvarHandlePasta(handle){
+    const db = await abrirIndexedDbPasta();
+    await new Promise((resolve, reject)=>{
+      const tx = db.transaction('handles', 'readwrite');
+      tx.objectStore('handles').put(handle, NOME_PASTA_ARMAZENADA);
+      tx.oncomplete = resolve; tx.onerror = ()=> reject(tx.error);
+    });
+  }
+  async function carregarHandlePasta(){
+    const db = await abrirIndexedDbPasta();
+    return new Promise((resolve, reject)=>{
+      const tx = db.transaction('handles', 'readonly');
+      const req = tx.objectStore('handles').get(NOME_PASTA_ARMAZENADA);
+      req.onsuccess = ()=> resolve(req.result || null);
+      req.onerror = ()=> reject(req.error);
     });
   }
 
-  let accessTokenCache = null; // {token, expiraEm}
-  async function obterTokenGraph(){
-    if(accessTokenCache && accessTokenCache.expiraEm > Date.now()+30000) return accessTokenCache.token;
-
-    const {verifier, challenge} = await gerarPkce();
-    const state = base64UrlEncode(crypto.getRandomValues(new Uint8Array(16)));
-    const redirectUri = window.location.origin + window.location.pathname;
-    const authUrl = 'https://login.microsoftonline.com/'+OAUTH_CONFIG.tenantId+'/oauth2/v2.0/authorize?'+
-      'client_id='+encodeURIComponent(OAUTH_CONFIG.clientId)+
-      '&response_type=code'+
-      '&redirect_uri='+encodeURIComponent(redirectUri)+
-      '&response_mode=query'+
-      '&scope='+encodeURIComponent(OAUTH_CONFIG.scopes)+
-      '&code_challenge='+challenge+
-      '&code_challenge_method=S256'+
-      '&state='+state+
-      '&prompt=select_account';
-
-    const code = await abrirPopupEEsperarCodigo(authUrl, redirectUri, state);
-
-    const tokenResp = await fetch('https://login.microsoftonline.com/'+OAUTH_CONFIG.tenantId+'/oauth2/v2.0/token', {
-      method: 'POST',
-      headers: {'Content-Type':'application/x-www-form-urlencoded'},
-      body: new URLSearchParams({
-        client_id: OAUTH_CONFIG.clientId,
-        grant_type: 'authorization_code',
-        code,
-        redirect_uri: redirectUri,
-        code_verifier: verifier,
-        scope: OAUTH_CONFIG.scopes,
-      })
-    });
-    if(!tokenResp.ok) throw new Error('falha ao trocar código por token ('+tokenResp.status+'): '+await tokenResp.text());
-    const tokenData = await tokenResp.json();
-    accessTokenCache = {token: tokenData.access_token, expiraEm: Date.now() + (tokenData.expires_in*1000)};
-    return accessTokenCache.token;
-  }
-
-  const SHAREPOINT_CONFIG = {
-    hostname: 'anttgov.sharepoint.com',
-    sitePath: '/sites/COSEV',
-    // caminho da pasta DENTRO da biblioteca "Documentos Compartilhados" (que é a
-    // biblioteca padrão/raiz do site — não entra no caminho abaixo).
-    folderPath: '020. Dados/011. Segmentos críticos/01. Concessionárias',
-  };
-
-  let siteIdCache = null;
-  async function resolverSiteId(token){
-    if(siteIdCache) return siteIdCache;
-    const url = 'https://graph.microsoft.com/v1.0/sites/'+SHAREPOINT_CONFIG.hostname+':'+SHAREPOINT_CONFIG.sitePath;
-    const resp = await fetch(url, {headers:{Authorization:'Bearer '+token}});
-    if(!resp.ok) throw new Error('não encontrei o site do SharePoint ('+resp.status+'): '+await resp.text());
-    const data = await resp.json();
-    siteIdCache = data.id;
-    return siteIdCache;
-  }
-
-  // Envia (ou substitui) um arquivo no SharePoint, em pedaços — a API do Graph só aceita
-  // upload direto (PUT simples) até 4 MB, e o Analise_*.xlsx gerado aqui costuma passar
-  // bem disso (já vimos casos de 70+ MB). "createUploadSession" abre uma sessão de envio
-  // resumível, e manda o arquivo em blocos de ~6,25 MB (múltiplo de 320 KiB, exigência da
-  // própria API) até completar.
-  async function enviarArquivoParaSharePoint(nomeArquivo, blob, onProgress){
-    const token = await obterTokenGraph();
-    const siteId = await resolverSiteId(token);
-    const caminho = (SHAREPOINT_CONFIG.folderPath+'/'+nomeArquivo).split('/').filter(Boolean).map(encodeURIComponent).join('/');
-    const sessionUrl = 'https://graph.microsoft.com/v1.0/sites/'+siteId+'/drive/root:/'+caminho+':/createUploadSession';
-    const sessionResp = await fetch(sessionUrl, {
-      method: 'POST',
-      headers: {Authorization:'Bearer '+token, 'Content-Type':'application/json'},
-      // conflictBehavior 'replace': se já existir arquivo com esse nome na pasta, substitui
-      // (é exatamente o "inserir/substituir" pedido) em vez de criar uma cópia numerada.
-      body: JSON.stringify({item: {'@microsoft.graph.conflictBehavior': 'replace', name: nomeArquivo}})
-    });
-    if(!sessionResp.ok) throw new Error('não consegui iniciar o envio ('+sessionResp.status+'): '+await sessionResp.text());
-    const uploadUrl = (await sessionResp.json()).uploadUrl;
-
-    const CHUNK = 320*1024*20; // ~6,25 MB
-    const total = blob.size;
-    let offset = 0;
-    while(offset < total){
-      const fim = Math.min(offset+CHUNK, total);
-      const pedaco = blob.slice(offset, fim);
-      const resp = await fetch(uploadUrl, {
-        method: 'PUT',
-        headers: {'Content-Length': String(fim-offset), 'Content-Range': 'bytes '+offset+'-'+(fim-1)+'/'+total},
-        body: pedaco
-      });
-      // 200/201 = terminou (último pedaço); 202 = aceitou esse pedaço, ainda tem mais
-      if(!resp.ok && resp.status !== 202){
-        throw new Error('falha ao enviar parte do arquivo ('+resp.status+'): '+await resp.text());
-      }
-      offset = fim;
-      if(onProgress) onProgress(offset/total);
+  // Escreve (ou substitui) o arquivo na pasta escolhida. Se já tiver uma pasta lembrada de
+  // antes, tenta usar direto (só re-perguntando permissão se o navegador exigir); se não
+  // tiver, ou se a pessoa quiser trocar, abre o seletor de pasta nativo.
+  async function salvarArquivoNaPastaLocal(nomeArquivo, blob, opts){
+    if(!suportaFileSystemAccess()){
+      throw new Error('esse navegador não suporta escolher pasta direto (funciona no Chrome e no Edge; Firefox e Safari não têm esse recurso) — usa o botão "Baixar" e arrasta o arquivo pra pasta sincronizada manualmente.');
     }
-    return true;
+    let dirHandle = opts && opts.trocarPasta ? null : await carregarHandlePasta();
+    if(dirHandle){
+      // já tinha uma pasta lembrada — confirma que ainda tem permissão (o navegador pode
+      // ter esquecido entre uma sessão e outra, por segurança)
+      const perm = await dirHandle.queryPermission({mode:'readwrite'});
+      if(perm !== 'granted'){
+        const pedido = await dirHandle.requestPermission({mode:'readwrite'});
+        if(pedido !== 'granted') dirHandle = null; // negou de novo — pede pra escolher outra
+      }
+    }
+    if(!dirHandle){
+      dirHandle = await window.showDirectoryPicker({mode:'readwrite'});
+      await salvarHandlePasta(dirHandle);
+    }
+    const fileHandle = await dirHandle.getFileHandle(nomeArquivo, {create:true});
+    const writable = await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+    return dirHandle.name;
   }
 
   aplicarPadroesEmbutidos();
@@ -3154,24 +3091,30 @@
 
   const sharepointBtn = document.getElementById('sharepointBtn');
   const sharepointStatus = document.getElementById('sharepointStatus');
+  let forcarTrocaDePasta = false;
   sharepointBtn.addEventListener('click', async ()=>{
     if(!outWorkbook) return;
     sharepointBtn.disabled = true;
     sharepointStatus.classList.remove('err');
-    sharepointStatus.textContent = 'Fazendo login…';
+    sharepointStatus.innerHTML = 'Escolha a pasta sincronizada (só pede de novo se trocar)…';
     try{
       // gera o mesmo conteúdo binário que o botão de baixar gera, só que como Blob em
-      // memória (sem disparar download) pra poder enviar pro Graph.
+      // memória (sem disparar download) pra poder escrever direto no arquivo.
       const arrayBuf = XLSX.write(outWorkbook, {bookType:'xlsx', type:'array'});
       const blob = new Blob([arrayBuf], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
-      await enviarArquivoParaSharePoint(outFileName, blob, (frac)=>{
-        sharepointStatus.textContent = 'Enviando… '+Math.round(frac*100)+'%';
-      });
-      sharepointStatus.textContent = '✓ "'+outFileName+'" salvo no SharePoint (COSEV › 020. Dados › 011. Segmentos críticos › 01. Concessionárias).';
+      const nomePasta = await salvarArquivoNaPastaLocal(outFileName, blob, {trocarPasta: forcarTrocaDePasta});
+      forcarTrocaDePasta = false;
+      sharepointStatus.innerHTML = '✓ "'+outFileName+'" salvo em "'+nomePasta+'". Se essa pasta estiver sincronizada com o SharePoint, sobe sozinho em instantes. '+
+        '<button type="button" class="linkBtn" id="trocarPastaBtn">trocar pasta</button>';
+      document.getElementById('trocarPastaBtn').addEventListener('click', ()=>{ forcarTrocaDePasta = true; sharepointBtn.click(); });
     }catch(err){
       console.error(err);
       sharepointStatus.classList.add('err');
-      sharepointStatus.textContent = 'Não consegui salvar no SharePoint: '+err.message;
+      if(err.name === 'AbortError'){
+        sharepointStatus.textContent = 'Cancelado — nenhuma pasta foi escolhida.';
+      } else {
+        sharepointStatus.textContent = 'Não consegui salvar: '+err.message;
+      }
     }finally{
       sharepointBtn.disabled = false;
     }
