@@ -9,6 +9,10 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<!-- MSAL.js v2 via CDN oficial da Microsoft (alcdn.msauth.net) — a partir da v3 o MSAL só é
+     distribuído via npm/bundler, o que não serve pro modelo de arquivo HTML único desta
+     ferramenta. v2 continua com suporte total pra login + token do Microsoft Graph. -->
+<script src="https://alcdn.msauth.net/browser/2.28.1/js/msal-browser.min.js"></script>
 <style>
   :root{
     --bg:#F3F1EA;
@@ -472,8 +476,10 @@
     <div id="criticidadeBlock"></div>
     <div class="btn-row">
       <button class="btn accent" id="downloadBtn">↓ Baixar Analise.xlsx</button>
+      <button class="btn" id="sharepointBtn" style="background:#fff; color:var(--text-dark); border:1px solid var(--line);">☁ Salvar no SharePoint</button>
       <button class="btn" id="resetBtn" style="background:#fff; color:var(--text-dark); border:1px solid var(--line);">Processar outro conjunto de arquivos</button>
     </div>
+    <p class="status" id="sharepointStatus" style="margin-top:8px;"></p>
   </div>
 
   <div class="panel" id="mapPanel" style="display:none;">
@@ -632,6 +638,113 @@
     mapa: { label: 'Mapa (trechos concedidos)', required: false, file: null, best: null, embutido: false }
   };
   let selectedConcessionaria = '';
+
+  // ---- Salvar no SharePoint (login Microsoft + Graph API) ----
+  // Login via MSAL.js (Authorization Code Flow + PKCE, sem servidor por trás — tudo roda
+  // no navegador). Cada pessoa que usar a ferramenta loga com a própria conta Microsoft e
+  // só consegue gravar onde ELA já tem permissão de edição (não é um acesso "de sistema"
+  // compartilhado) — é o mesmo tipo de acesso que ela já tem abrindo o SharePoint direto.
+  const SHAREPOINT_CONFIG = {
+    hostname: 'anttgov.sharepoint.com',
+    sitePath: '/sites/COSEV',
+    // caminho da pasta DENTRO da biblioteca "Documentos Compartilhados" (que é a
+    // biblioteca padrão/raiz do site — não entra no caminho abaixo).
+    folderPath: '020. Dados/011. Segmentos críticos/01. Concessionárias',
+  };
+  const GRAPH_SCOPES = ['Files.ReadWrite', 'User.Read'];
+
+  let msalInstance = null;
+  function getMsalInstance(){
+    if(!msalInstance){
+      if(typeof msal === 'undefined'){
+        throw new Error('biblioteca de login da Microsoft (MSAL) não carregou — confira sua conexão e recarregue a página');
+      }
+      msalInstance = new msal.PublicClientApplication({
+        auth: {
+          clientId: '19e62ac1-42fd-4d11-9d91-9c8702f91496',
+          authority: 'https://login.microsoftonline.com/87bbe9de-a892-4cde-a466-88f982fbc490',
+          // funciona tanto local (localhost:5500) quanto publicado no GitHub Pages sem
+          // precisar trocar nada — usa a própria URL de onde a ferramenta está rodando.
+          redirectUri: window.location.origin + window.location.pathname,
+        },
+        cache: { cacheLocation: 'sessionStorage' }
+      });
+    }
+    return msalInstance;
+  }
+
+  async function loginEAdquirirTokenGraph(){
+    const app = getMsalInstance();
+    await app.initialize();
+    await app.handleRedirectPromise();
+    let account = app.getActiveAccount() || app.getAllAccounts()[0];
+    if(!account){
+      const loginResp = await app.loginPopup({scopes: GRAPH_SCOPES});
+      account = loginResp.account;
+    }
+    app.setActiveAccount(account);
+    try{
+      const tokenResp = await app.acquireTokenSilent({scopes: GRAPH_SCOPES, account});
+      return tokenResp.accessToken;
+    }catch(e){
+      // token expirado/revogado ou primeira vez de verdade — pede de novo interativamente
+      const tokenResp = await app.acquireTokenPopup({scopes: GRAPH_SCOPES, account});
+      return tokenResp.accessToken;
+    }
+  }
+
+  let siteIdCache = null;
+  async function resolverSiteId(token){
+    if(siteIdCache) return siteIdCache;
+    const url = 'https://graph.microsoft.com/v1.0/sites/'+SHAREPOINT_CONFIG.hostname+':'+SHAREPOINT_CONFIG.sitePath;
+    const resp = await fetch(url, {headers:{Authorization:'Bearer '+token}});
+    if(!resp.ok) throw new Error('não encontrei o site do SharePoint ('+resp.status+'): '+await resp.text());
+    const data = await resp.json();
+    siteIdCache = data.id;
+    return siteIdCache;
+  }
+
+  // Envia (ou substitui) um arquivo no SharePoint, em pedaços — a API do Graph só aceita
+  // upload direto (PUT simples) até 4 MB, e o Analise_*.xlsx gerado aqui costuma passar
+  // bem disso (já vimos casos de 70+ MB). "createUploadSession" abre uma sessão de envio
+  // resumível, e manda o arquivo em blocos de ~6,25 MB (múltiplo de 320 KiB, exigência da
+  // própria API) até completar.
+  async function enviarArquivoParaSharePoint(nomeArquivo, blob, onProgress){
+    const token = await loginEAdquirirTokenGraph();
+    const siteId = await resolverSiteId(token);
+    const caminho = (SHAREPOINT_CONFIG.folderPath+'/'+nomeArquivo).split('/').filter(Boolean).map(encodeURIComponent).join('/');
+    const sessionUrl = 'https://graph.microsoft.com/v1.0/sites/'+siteId+'/drive/root:/'+caminho+':/createUploadSession';
+    const sessionResp = await fetch(sessionUrl, {
+      method: 'POST',
+      headers: {Authorization:'Bearer '+token, 'Content-Type':'application/json'},
+      // conflictBehavior 'replace': se já existir arquivo com esse nome na pasta, substitui
+      // (é exatamente o "inserir/substituir" pedido) em vez de criar uma cópia numerada.
+      body: JSON.stringify({item: {'@microsoft.graph.conflictBehavior': 'replace', name: nomeArquivo}})
+    });
+    if(!sessionResp.ok) throw new Error('não consegui iniciar o envio ('+sessionResp.status+'): '+await sessionResp.text());
+    const uploadUrl = (await sessionResp.json()).uploadUrl;
+
+    const CHUNK = 320*1024*20; // ~6,25 MB
+    const total = blob.size;
+    let offset = 0;
+    while(offset < total){
+      const fim = Math.min(offset+CHUNK, total);
+      const pedaco = blob.slice(offset, fim);
+      const resp = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: {'Content-Length': String(fim-offset), 'Content-Range': 'bytes '+offset+'-'+(fim-1)+'/'+total},
+        body: pedaco
+      });
+      // 200/201 = terminou (último pedaço); 202 = aceitou esse pedaço, ainda tem mais
+      if(!resp.ok && resp.status !== 202){
+        throw new Error('falha ao enviar parte do arquivo ('+resp.status+'): '+await resp.text());
+      }
+      offset = fim;
+      if(onProgress) onProgress(offset/total);
+    }
+    return true;
+  }
+
   aplicarPadroesEmbutidos();
 
   function renderChecklist(){
@@ -2999,6 +3112,31 @@
   downloadBtn.addEventListener('click', ()=>{
     if(!outWorkbook) return;
     XLSX.writeFile(outWorkbook, outFileName);
+  });
+
+  const sharepointBtn = document.getElementById('sharepointBtn');
+  const sharepointStatus = document.getElementById('sharepointStatus');
+  sharepointBtn.addEventListener('click', async ()=>{
+    if(!outWorkbook) return;
+    sharepointBtn.disabled = true;
+    sharepointStatus.classList.remove('err');
+    sharepointStatus.textContent = 'Fazendo login…';
+    try{
+      // gera o mesmo conteúdo binário que o botão de baixar gera, só que como Blob em
+      // memória (sem disparar download) pra poder enviar pro Graph.
+      const arrayBuf = XLSX.write(outWorkbook, {bookType:'xlsx', type:'array'});
+      const blob = new Blob([arrayBuf], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+      await enviarArquivoParaSharePoint(outFileName, blob, (frac)=>{
+        sharepointStatus.textContent = 'Enviando… '+Math.round(frac*100)+'%';
+      });
+      sharepointStatus.textContent = '✓ "'+outFileName+'" salvo no SharePoint (COSEV › 020. Dados › 011. Segmentos críticos › 01. Concessionárias).';
+    }catch(err){
+      console.error(err);
+      sharepointStatus.classList.add('err');
+      sharepointStatus.textContent = 'Não consegui salvar no SharePoint: '+err.message;
+    }finally{
+      sharepointBtn.disabled = false;
+    }
   });
 
   // ---- Mapa interativo de sinistros ----
