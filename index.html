@@ -665,7 +665,7 @@
 
   // Guarda a referência da pasta escolhida no IndexedDB (não dá pra guardar isso num
   // simples localStorage — só serializando via IndexedDB o navegador permite reidratar um
-  // FileSystemDirectoryHandle depois), pra não pedir de novo toda vez.
+  // FileSystemDirectoryHandle depois), pra não pedir de novo toda vez que a página recarrega.
   function abrirIndexedDbPasta(){
     return new Promise((resolve, reject)=>{
       const req = indexedDB.open('gerador_pq_pastas', 1);
@@ -674,45 +674,58 @@
       req.onerror = ()=> reject(req.error);
     });
   }
-  async function salvarHandlePasta(handle){
-    const db = await abrirIndexedDbPasta();
-    await new Promise((resolve, reject)=>{
-      const tx = db.transaction('handles', 'readwrite');
-      tx.objectStore('handles').put(handle, NOME_PASTA_ARMAZENADA);
-      tx.oncomplete = resolve; tx.onerror = ()=> reject(tx.error);
-    });
-  }
-  async function carregarHandlePasta(){
-    const db = await abrirIndexedDbPasta();
-    return new Promise((resolve, reject)=>{
-      const tx = db.transaction('handles', 'readonly');
-      const req = tx.objectStore('handles').get(NOME_PASTA_ARMAZENADA);
-      req.onsuccess = ()=> resolve(req.result || null);
-      req.onerror = ()=> reject(req.error);
-    });
+  async function salvarHandlePastaEmSegundoPlano(handle){
+    try{
+      const db = await abrirIndexedDbPasta();
+      await new Promise((resolve, reject)=>{
+        const tx = db.transaction('handles', 'readwrite');
+        tx.objectStore('handles').put(handle, NOME_PASTA_ARMAZENADA);
+        tx.oncomplete = resolve; tx.onerror = ()=> reject(tx.error);
+      });
+    }catch(e){ console.error('não consegui lembrar a pasta pra próxima vez:', e); } // não é crítico, só um "atalho" a menos
   }
 
-  // Escreve (ou substitui) o arquivo na pasta escolhida. Se já tiver uma pasta lembrada de
-  // antes, tenta usar direto (só re-perguntando permissão se o navegador exigir); se não
-  // tiver, ou se a pessoa quiser trocar, abre o seletor de pasta nativo.
-  async function salvarArquivoNaPastaLocal(nomeArquivo, blob, opts){
+  // Cache em memória da pasta já escolhida — funciona pra qualquer clique DEPOIS do
+  // primeiro nesta mesma aba. Pré-carregado (de forma assíncrona, em segundo plano, sem
+  // depender de clique nenhum) a partir do IndexedDB logo que a página abre, pra já estar
+  // pronto quando a pessoa clicar em "Salvar" pela primeira vez na sessão.
+  let dirHandleCache = null;
+  (async ()=>{
+    try{
+      const db = await abrirIndexedDbPasta();
+      dirHandleCache = await new Promise((resolve, reject)=>{
+        const tx = db.transaction('handles', 'readonly');
+        const req = tx.objectStore('handles').get(NOME_PASTA_ARMAZENADA);
+        req.onsuccess = ()=> resolve(req.result || null);
+        req.onerror = ()=> reject(req.error);
+      });
+    }catch(e){ /* sem pasta lembrada ainda, ou navegador sem suporte — tudo bem, pede na hora */ }
+  })();
+
+  // IMPORTANTE: showDirectoryPicker() só pode ser chamado bem no início da resposta a um
+  // clique — qualquer "await" antes dele (mesmo rapidinho, tipo IndexedDB) já é suficiente
+  // pro navegador recusar com "Must be handling a user gesture". Por isso o cache em
+  // memória (dirHandleCache) é checado de forma síncrona aqui, sem nenhum await antes da
+  // chamada ao seletor quando precisa abrir um novo.
+  async function obterPastaHandle(trocarPasta){
     if(!suportaFileSystemAccess()){
       throw new Error('esse navegador não suporta escolher pasta direto (funciona no Chrome e no Edge; Firefox e Safari não têm esse recurso) — usa o botão "Baixar" e arrasta o arquivo pra pasta sincronizada manualmente.');
     }
-    let dirHandle = opts && opts.trocarPasta ? null : await carregarHandlePasta();
-    if(dirHandle){
-      // já tinha uma pasta lembrada — confirma que ainda tem permissão (o navegador pode
-      // ter esquecido entre uma sessão e outra, por segurança)
-      const perm = await dirHandle.queryPermission({mode:'readwrite'});
-      if(perm !== 'granted'){
-        const pedido = await dirHandle.requestPermission({mode:'readwrite'});
-        if(pedido !== 'granted') dirHandle = null; // negou de novo — pede pra escolher outra
-      }
+    if(trocarPasta) dirHandleCache = null;
+    if(dirHandleCache){
+      try{
+        const perm = await dirHandleCache.queryPermission({mode:'readwrite'});
+        if(perm === 'granted') return dirHandleCache;
+      }catch(e){ /* handle inválido (pasta movida/apagada) — ignora e pede de novo abaixo */ }
+      dirHandleCache = null;
     }
-    if(!dirHandle){
-      dirHandle = await window.showDirectoryPicker({mode:'readwrite'});
-      await salvarHandlePasta(dirHandle);
-    }
+    dirHandleCache = await window.showDirectoryPicker({mode:'readwrite'});
+    salvarHandlePastaEmSegundoPlano(dirHandleCache); // não precisa esperar isso terminar
+    return dirHandleCache;
+  }
+
+  // Escreve (ou substitui) o arquivo na pasta escolhida.
+  async function salvarArquivoNaPastaLocal(nomeArquivo, blob, dirHandle){
     const fileHandle = await dirHandle.getFileHandle(nomeArquivo, {create:true});
     const writable = await fileHandle.createWritable();
     await writable.write(blob);
@@ -3096,14 +3109,18 @@
     if(!outWorkbook) return;
     sharepointBtn.disabled = true;
     sharepointStatus.classList.remove('err');
-    sharepointStatus.innerHTML = 'Escolha a pasta sincronizada (só pede de novo se trocar)…';
+    sharepointStatus.textContent = 'Escolha a pasta sincronizada (só pede de novo se trocar)…';
     try{
-      // gera o mesmo conteúdo binário que o botão de baixar gera, só que como Blob em
-      // memória (sem disparar download) pra poder escrever direto no arquivo.
+      // obterPastaHandle precisa ser a PRIMEIRA coisa async chamada aqui dentro — o
+      // seletor de pasta nativo só abre enquanto ainda estamos "dentro" do clique da
+      // pessoa; qualquer outro await antes dele (gerar o Excel, etc.) já é o suficiente
+      // pro navegador recusar.
+      const dirHandle = await obterPastaHandle(forcarTrocaDePasta);
+      forcarTrocaDePasta = false;
+      sharepointStatus.textContent = 'Gerando o arquivo…';
       const arrayBuf = XLSX.write(outWorkbook, {bookType:'xlsx', type:'array'});
       const blob = new Blob([arrayBuf], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
-      const nomePasta = await salvarArquivoNaPastaLocal(outFileName, blob, {trocarPasta: forcarTrocaDePasta});
-      forcarTrocaDePasta = false;
+      const nomePasta = await salvarArquivoNaPastaLocal(outFileName, blob, dirHandle);
       sharepointStatus.innerHTML = '✓ "'+outFileName+'" salvo em "'+nomePasta+'". Se essa pasta estiver sincronizada com o SharePoint, sobe sozinho em instantes. '+
         '<button type="button" class="linkBtn" id="trocarPastaBtn">trocar pasta</button>';
       document.getElementById('trocarPastaBtn').addEventListener('click', ()=>{ forcarTrocaDePasta = true; sharepointBtn.click(); });
