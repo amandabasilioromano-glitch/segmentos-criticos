@@ -1325,6 +1325,11 @@
   }
 
   let lastFileBaseName = 'Analise';
+  // Tira caracteres que Windows/Mac não aceitam em nome de arquivo (/ \ : * ? " < > |) e
+  // colapsa espaço duplo — mantém acento e espaço normal, que esses sistemas aceitam.
+  function sanitizarNomeArquivo(nome){
+    return String(nome).replace(/[\/\\:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim();
+  }
 
   function readDateInput(id, isEnd){
     const v = document.getElementById(id).value;
@@ -1929,7 +1934,11 @@
       try{
         const result = processSheet(best.aoa, best.headerRow, dateStart, dateEnd, vmdaIndex, snvListWithVmda, snvTrechosConcessionaria, kFinal, selectedConcessionaria, auxTrechosList, auxVmdaIndex, trechosIndex);
         outWorkbook = result.workbook;
-        outFileName = 'Analise_' + lastFileBaseName + '.xlsx';
+        // usa o nome da concessionária no arquivo quando ela foi identificada/selecionada
+        // (mais claro que o nome do arquivo original enviado, que pode ser genérico tipo
+        // "PQ_ACIDENTE (3).xlsx"); sanitiza caracteres que não podem ir em nome de arquivo.
+        const nomeBase = selectedConcessionaria ? sanitizarNomeArquivo(selectedConcessionaria) : lastFileBaseName;
+        outFileName = 'Analise_' + nomeBase + '.xlsx';
         renderStats(result.stats);
         renderMap(result.mapPoints, result.stats.mapaExcluidosPorAlerta);
         renderTrechosConcedidosLayer();
