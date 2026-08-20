@@ -197,8 +197,8 @@
 
   /* ---- Stats grid ---- */
   .stats{
-    display:grid;
-    grid-template-columns:repeat(auto-fit, minmax(130px,1fr));
+    display:flex;
+    flex-wrap:wrap;
     gap:1px;
     background:var(--line);
     border:1px solid var(--line);
@@ -209,6 +209,8 @@
   .stat{
     background:#fff;
     padding:16px 14px;
+    flex:1 1 130px;
+    min-width:130px;
   }
   .stat .n{
     font-family:'JetBrains Mono',monospace;
@@ -225,6 +227,38 @@
   .stat.aco .n{ color:var(--warn); }
   .stat.acv .n{ color:var(--accent-dim); }
   .stat.asv .n{ color:var(--ok); }
+  .stat .n .pct{
+    font-family:'JetBrains Mono',monospace;
+    font-size:0.52em;
+    font-weight:500;
+    color:var(--muted);
+    margin-left:4px;
+  }
+
+  /* Grupo de estatística por rodovia (Sinistros / Extensão / Pessoas envolvidas) — mais
+     compacto que o .stats geral, com poucos itens por grupo pra sempre caber numa linha
+     só sem apertar. */
+  .stats-grupo{
+    display:flex;
+    flex-wrap:wrap;
+    gap:1px;
+    background:var(--line);
+    border:1px solid var(--line);
+    border-radius:2px;
+    overflow:hidden;
+    margin-top:4px;
+  }
+  .stats-grupo .stat{ flex:1 1 110px; min-width:110px; padding:12px 12px; }
+  .stats-grupo .stat .n{ font-size:18px; }
+  .stats-grupo .stat .l{ font-size:10px; }
+  .grupo-label{
+    font-family:'JetBrains Mono',monospace;
+    font-size:10.5px;
+    text-transform:uppercase;
+    letter-spacing:0.05em;
+    color:var(--muted);
+    margin:14px 0 4px;
+  }
 
   /* ---- Steps ---- */
   .steps{
@@ -337,9 +371,8 @@
       <div class="dashes"></div>
       <div class="km">PQ_ACIDENTE → ANALISE</div>
     </div>
-    <div class="eyebrow">Ferramenta local · sem instalação</div>
     <h1>Metodologia de identificação e tratamento de <span>segmentos críticos</span> - ANTT</h1>
-    <p class="lede">Envie a planilha bruta de PQ_ACIDENTE e a ferramenta monta a aba Analise — decompondo Gravidade Animal, Pedestre e Vítima em colunas, e calculando a Classificação de Sinistro (ASV / ACV / ACO) e o Ano de cada sinistro.</p>
+    <p class="lede">Ferramenta para identificação e tratamento de trechos críticos em rodovias federais concedidas, a partir da base de sinistros das concessionárias.</p>
   </header>
 
   <div class="steps">
@@ -380,20 +413,16 @@
 
   <div class="panel">
     <p class="panel-title"><span class="badge">02</span> Trechos e período de análise</p>
-    <p style="font-size:13px; color:#3B3A34; line-height:1.6; margin:0 0 16px;">
-      Com SNV + coluna <strong>Concessionária</strong>, os trechos seguem a cobertura oficial da
-      concessionária no SNV inteira — inclusive os pedaços sem nenhum sinistro (pra você ver o
-      comportamento da rodovia toda, não só onde houve sinistro). Os sinistros só esticam as pontas
-      quando passam do que o SNV registra. Sem SNV/Concessionária, os trechos são montados a partir
-      dos próprios sinistros: os próximos entram no mesmo trecho, e um vazio grande sem nenhum
-      registro separa em trechos diferentes.
-      <br><br>
-      <strong>Trechos que mudaram de concessionária:</strong> a Triunfo Concebra tinha os trechos que
-      hoje são da Way-262 e da Way-153, e a Motiva RioSP tinha o BR-116/RJ km 170–213,9 que hoje é da
-      Ecovias Rio Minas. Ao processar essas concessionárias, a ferramenta busca o VMDA/SNV desses
-      trechos na concessionária atual responsável por eles (a aba <strong>Rodovia</strong> do arquivo
-      final mostra uma observação nesses casos).
-    </p>
+    <details class="help" style="margin-bottom:16px;">
+      <summary>Observação: trechos que mudaram de concessionária</summary>
+      <p style="font-size:12.5px; color:#3B3A34; line-height:1.6; margin:8px 0 0;">
+        A Triunfo Concebra tinha os trechos que hoje são da Way-262 e da Way-153, e a Motiva RioSP
+        tinha o BR-116/RJ km 170–213,9 que hoje é da Ecovias Rio Minas. Ao processar essas
+        concessionárias, a ferramenta busca o VMDA/SNV desses trechos na concessionária atual
+        responsável por eles (a aba <strong>Rodovia</strong> do arquivo final mostra uma observação
+        nesses casos).
+      </p>
+    </details>
     <div id="concessionariaPanel" style="display:none; margin-bottom:16px;">
       <label style="font-size:12px; font-family:'JetBrains Mono',monospace; color:var(--muted); display:block; margin-bottom:6px;">
         Concessionária dos dados enviados
@@ -423,14 +452,23 @@
 
   <div class="panel">
     <p class="panel-title"><span class="badge">03</span> Metodologia de trechos críticos (Ip / Ic)</p>
-    <p style="font-size:13px; color:#3B3A34; line-height:1.6; margin:0 0 16px;">
-      As colunas <strong>AE a AI</strong> da aba Intervalo (Ip, Exposição acumulada, Ip acumulado,
-      Ic e Criticidade) saem como <strong>fórmulas do Excel</strong>, não como valores fixos — se você
-      editar o VMDa (colunas AB a AD) na planilha depois de baixada, elas recalculam sozinhas.
-      O período usado na fórmula de exposição é o mesmo período de análise definido acima
-      (ou o intervalo de datas dos sinistros, se você não filtrar). O Segmento Homogêneo (SH)
-      usado no acumulado é Rodovia (corrigida) + UF (corrigida) + Tipo de eixo.
+    <p style="font-size:13px; color:#3B3A34; line-height:1.6; margin:0 0 12px;">
+      Cada trecho é avaliado pela relação entre sinistralidade e exposição ao tráfego: o Índice
+      Ponderado de Sinistros (Ip) pondera os sinistros do trecho pelo volume de tráfego (VMDa) e pela
+      extensão no período analisado, e o Índice Crítico (Ic) compara esse resultado acumulado do
+      Segmento Homogêneo com um limite estatístico — trechos acima do limite são classificados como
+      críticos.
     </p>
+    <details class="help" style="margin-bottom:16px;">
+      <summary>Observação: cálculo, período e Segmento Homogêneo</summary>
+      <p style="font-size:12.5px; color:#3B3A34; line-height:1.6; margin:8px 0 0;">
+        As colunas AE a AI da aba Intervalo saem como fórmulas do Excel, não valores fixos — editando
+        o VMDa (colunas AB a AD) depois de baixada, elas recalculam sozinhas. O período usado na
+        fórmula de exposição é o mesmo período de análise definido acima (ou o intervalo de datas dos
+        sinistros, se você não filtrar). O Segmento Homogêneo (SH) usado no acumulado é Rodovia
+        (corrigida) + UF (corrigida) + Tipo de eixo.
+      </p>
+    </details>
     <div style="display:grid; grid-template-columns:1fr 1fr; gap:0; border:1px solid var(--line); border-radius:2px; margin-bottom:20px; overflow:hidden;">
       <div style="padding:14px 16px; border-right:1px solid var(--line); border-bottom:1px solid var(--line);">
         <p style="font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:12.5px; margin:0 0 10px;">Índice Ponderado de Sinistros (Ip)</p>
@@ -468,7 +506,7 @@
 
   <div class="panel" id="resultPanel" style="display:none;">
     <p class="panel-title"><span class="badge">04</span> Resultado</p>
-    <div class="stats" id="stats"></div>
+    <div id="stats"></div>
     <div id="criticidadeBlock"></div>
     <div class="btn-row">
       <button class="btn accent" id="downloadBtn">↓ Baixar Analise.xlsx</button>
@@ -3043,17 +3081,41 @@
   function fmtPct(n){
     return n.toLocaleString('pt-BR', {minimumFractionDigits:1, maximumFractionDigits:1}) + '%';
   }
+  // Percentual pequeno entre parênteses, ao lado do valor principal do quadro — ex.: "9.738
+  // (56,9%)". Vazio se não tiver total pra comparar (divisão por zero).
+  function pctSpan(parte, total){
+    if(!total) return '';
+    return ' <span class="pct">('+fmtPct(parte/total*100)+')</span>';
+  }
 
   function renderStats(s){
     const nRodovias = s.criticidade ? s.criticidade.porRodovia.length : null;
+    const naoRepresentados = s.mapaExcluidosPorAlerta || 0;
+    const pessoasTotalGeral = (s.obitos||0) + (s.feridos||0) + (s.ilesos||0);
     statsEl.innerHTML = `
-      <div class="stat"><div class="n" style="font-size:16px;">${s.minData ? fmtDateBR(s.minData) : '–'}–${s.maxData ? fmtDateBR(s.maxData) : '–'}</div><div class="l">Período</div></div>
-      ${nRodovias!=null ? `<div class="stat"><div class="n">${nRodovias}</div><div class="l">Rodovias</div></div>` : ''}
-      <div class="stat"><div class="n">${s.trechos}</div><div class="l">Trechos (segmentos)</div></div>
-      <div class="stat"><div class="n">${s.intervalos.toLocaleString('pt-BR')}</div><div class="l">Intervalos</div></div>
-      <div class="stat aco"><div class="n">${(s.obitos||0).toLocaleString('pt-BR')}</div><div class="l">Óbitos</div></div>
-      <div class="stat acv"><div class="n">${(s.feridos||0).toLocaleString('pt-BR')}</div><div class="l">Feridos</div></div>
-      <div class="stat asv"><div class="n">${(s.ilesos||0).toLocaleString('pt-BR')}</div><div class="l">Ilesos / não identificado</div></div>
+      <p class="grupo-label" style="margin-top:0;">Visão geral</p>
+      <div class="stats stats-grupo">
+        <div class="stat"><div class="n" style="font-size:16px;">${s.minData ? fmtDateBR(s.minData) : '–'}–${s.maxData ? fmtDateBR(s.maxData) : '–'}</div><div class="l">Período</div></div>
+        ${nRodovias!=null ? `<div class="stat"><div class="n">${nRodovias}</div><div class="l">Rodovias</div></div>` : ''}
+        <div class="stat"><div class="n">${s.trechos}</div><div class="l">Trechos (segmentos)</div></div>
+        <div class="stat"><div class="n">${s.intervalos.toLocaleString('pt-BR')}</div><div class="l">Intervalos</div></div>
+      </div>
+      <p class="grupo-label">Pessoas envolvidas</p>
+      <div class="stats stats-grupo">
+        <div class="stat"><div class="n">${pessoasTotalGeral.toLocaleString('pt-BR')}</div><div class="l">Pessoas envolvidas</div></div>
+        <div class="stat aco"><div class="n">${(s.obitos||0).toLocaleString('pt-BR')}${pctSpan(s.obitos||0, pessoasTotalGeral)}</div><div class="l">Óbitos</div></div>
+        <div class="stat acv"><div class="n">${(s.feridos||0).toLocaleString('pt-BR')}${pctSpan(s.feridos||0, pessoasTotalGeral)}</div><div class="l">Feridos</div></div>
+        <div class="stat asv"><div class="n">${(s.ilesos||0).toLocaleString('pt-BR')}${pctSpan(s.ilesos||0, pessoasTotalGeral)}</div><div class="l">Ilesos / não identificado</div></div>
+      </div>
+      ${s.coordAlertas != null ? `
+      <p class="grupo-label">Qualidade da coordenada</p>
+      <div class="stats stats-grupo">
+        <div class="stat${s.coordAlertas>0?' aco':''}"><div class="n">${s.coordAlertas.toLocaleString('pt-BR')}</div><div class="l">Coordenada fora da UF/rodovia</div></div>
+        <div class="stat${naoRepresentados>0?' aco':''}"><div class="n">${naoRepresentados.toLocaleString('pt-BR')}</div><div class="l">Não representados no mapa</div></div>
+      </div>
+      <p style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); margin:6px 0 0;">
+        Todos entram na Analise/Intervalo — só os "não representados" ficam de fora do mapa.
+      </p>` : ''}
     `;
 
     let vmdaBlock = '';
@@ -3061,7 +3123,7 @@
       vmdaBlock = `
       <div>
         <p style="font-family:'Space Grotesk',sans-serif; font-weight:600; font-size:13px; margin:0 0 2px;">Cobertura de VMDa no SNV</p>
-        <p style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); margin:0 0 8px;">Auditoria de todos os códigos SNV dessa concessionária (checando SNV+VMDa e, se enviada, a planilha auxiliar). "Sem nenhum dado" entra do mesmo jeito na sua Intervalo (a rodovia inteira é coberta, com ou sem sinistro) — só fica com a coluna de VMDa em branco nessas faixas.</p>
+        <p style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); margin:0 0 8px;">Auditoria dos códigos SNV da concessionária — "sem nenhum dado" ainda entra na Intervalo, só sem VMDa.</p>
         <div class="stats">
           <div class="stat asv"><div class="n">${s.vmdaStats.direto.toLocaleString('pt-BR')}</div><div class="l">Código c/ VMDa direto</div></div>
           <div class="stat acv"><div class="n">${s.vmdaStats.preenchido.toLocaleString('pt-BR')}</div><div class="l">Preenchidos p/ vizinhança</div></div>
@@ -3073,27 +3135,35 @@
 
     if(s.criticidade){
       const c = s.criticidade;
-      const bloco = (r, isTotal) => `
+      const bloco = (r, isTotal) => { const pessoasTotal = r.obitos + r.feridos + r.ilesos; return `
         <p style="font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:14.5px; margin:${isTotal ? '20px' : '18px'} 0 6px;">
           ${isTotal ? '<span style="background:var(--accent); padding:2px 8px; border-radius:2px;">'+r.rodovia+'</span>' : r.rodovia}
         </p>
-        <div class="stats">
+        <p class="grupo-label" style="margin-top:8px;">Sinistros</p>
+        <div class="stats stats-grupo">
           <div class="stat"><div class="n">${r.sinistros.toLocaleString('pt-BR')}</div><div class="l">Sinistros</div></div>
-          <div class="stat asv"><div class="n">${r.asv.toLocaleString('pt-BR')}</div><div class="l">ASV</div></div>
-          <div class="stat acv"><div class="n">${r.acv.toLocaleString('pt-BR')}</div><div class="l">ACV</div></div>
-          <div class="stat aco"><div class="n">${r.aco.toLocaleString('pt-BR')}</div><div class="l">ACO</div></div>
+          <div class="stat asv"><div class="n">${r.asv.toLocaleString('pt-BR')}${pctSpan(r.asv, r.sinistros)}</div><div class="l">ASV</div></div>
+          <div class="stat acv"><div class="n">${r.acv.toLocaleString('pt-BR')}${pctSpan(r.acv, r.sinistros)}</div><div class="l">ACV</div></div>
+          <div class="stat aco"><div class="n">${r.aco.toLocaleString('pt-BR')}${pctSpan(r.aco, r.sinistros)}</div><div class="l">ACO</div></div>
+        </div>
+        <p class="grupo-label">Extensão e criticidade</p>
+        <div class="stats stats-grupo">
           <div class="stat"><div class="n">${fmtKmStat(r.extTotal)} km</div><div class="l">Extensão</div></div>
           <div class="stat aco"><div class="n">${fmtPct(r.pctCritico)}</div><div class="l">Crítica (% km)</div></div>
           <div class="stat asv"><div class="n">${fmtPct(r.pctNaoCritico)}</div><div class="l">Não crítica (% km)</div></div>
           <div class="stat"><div class="n">${fmtPct(r.pctNaoClassificado)}</div><div class="l">Não classif. (% km)</div></div>
-          <div class="stat aco"><div class="n">${r.obitos.toLocaleString('pt-BR')}</div><div class="l">Óbitos</div></div>
-          <div class="stat acv"><div class="n">${r.feridos.toLocaleString('pt-BR')}</div><div class="l">Feridos</div></div>
-          <div class="stat asv"><div class="n">${r.ilesos.toLocaleString('pt-BR')}</div><div class="l">Ilesos / não identif.</div></div>
+        </div>
+        <p class="grupo-label">Pessoas envolvidas</p>
+        <div class="stats stats-grupo">
+          <div class="stat"><div class="n">${pessoasTotal.toLocaleString('pt-BR')}</div><div class="l">Pessoas envolvidas</div></div>
+          <div class="stat aco"><div class="n">${r.obitos.toLocaleString('pt-BR')}${pctSpan(r.obitos, pessoasTotal)}</div><div class="l">Óbitos</div></div>
+          <div class="stat acv"><div class="n">${r.feridos.toLocaleString('pt-BR')}${pctSpan(r.feridos, pessoasTotal)}</div><div class="l">Feridos</div></div>
+          <div class="stat asv"><div class="n">${r.ilesos.toLocaleString('pt-BR')}${pctSpan(r.ilesos, pessoasTotal)}</div><div class="l">Ilesos / não identif.</div></div>
         </div>
         <p style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); margin:6px 0 0;">
           Dos sinistros, <strong style="color:var(--warn);">${fmtPct(r.pctSinistrosCritico)}</strong> caem em trecho crítico
           (mesmo esse trecho sendo só ${fmtPct(r.pctCritico)} da extensão — trecho crítico costuma concentrar mais sinistro por km).
-        </p>`;
+        </p>`; };
 
       criticidadeEl.innerHTML = vmdaBlock + `
         <div style="margin-top:${vmdaBlock ? '20px' : '8px'};">
