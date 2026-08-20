@@ -505,7 +505,13 @@
   </div>
 
   <div class="panel" id="resultPanel" style="display:none;">
-    <p class="panel-title"><span class="badge">04</span> Resultado</p>
+    <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;">
+      <p class="panel-title" style="margin:0;"><span class="badge">04</span> Resultado</p>
+      <label id="resultadoConcessLabel" style="display:none; font-family:'JetBrains Mono',monospace; font-size:11.5px; color:var(--muted);">
+        Concessionária:
+        <select id="resultadoConcessSelect" style="margin-left:6px; padding:6px 10px; border:1px solid var(--line); border-radius:2px; font-family:'Inter',sans-serif; font-size:13px; background:#fff;"></select>
+      </label>
+    </div>
     <div id="stats"></div>
     <div id="criticidadeBlock"></div>
     <div class="btn-row">
@@ -572,7 +578,7 @@
     <iframe id="iframeAnaliseDetalhada" style="width:100%; min-height:400px; border:none; display:block;"></iframe>
   </div>
 
-  <footer>Rodovia federal sob concessão · clusterização de sinistros — processamento 100% local</footer>
+
 </div>
 
 <script>
@@ -609,6 +615,36 @@
 
   let outWorkbook = null;
   let outFileName = 'Analise.xlsx';
+
+  // Acumula um resultado por concessionária processada — processar uma segunda (ou
+  // terceira...) concessionária não substitui a anterior, fica disponível pra trocar de
+  // volta pelo seletor. Guarda só o essencial pra re-renderizar sem reprocessar (não guarda
+  // trechosIndex nem os sinistros crus, que são reconstruídos na hora a partir do Mapa
+  // embutido, mais leve que duplicar tudo por concessionária).
+  const resultadosPorConcessionaria = new Map();
+  const resultadoConcessSelect = document.getElementById('resultadoConcessSelect');
+  const resultadoConcessLabel = document.getElementById('resultadoConcessLabel');
+
+  function atualizarSeletorConcessionarias(selecionar){
+    const nomes = Array.from(resultadosPorConcessionaria.keys());
+    resultadoConcessLabel.style.display = nomes.length > 1 ? 'inline-flex' : 'none';
+    resultadoConcessSelect.innerHTML = nomes.map(n=> '<option value="'+String(n).replace(/"/g,'&quot;')+'">'+n+'</option>').join('');
+    if(selecionar) resultadoConcessSelect.value = selecionar;
+  }
+  resultadoConcessSelect.addEventListener('change', ()=> mostrarResultadoConcessionaria(resultadoConcessSelect.value));
+
+  function mostrarResultadoConcessionaria(nome){
+    const r = resultadosPorConcessionaria.get(nome);
+    if(!r) return;
+    outWorkbook = r.outWorkbook;
+    outFileName = r.outFileName;
+    selectedConcessionaria = nome;
+    renderStats(r.stats);
+    renderMap(r.mapPoints, r.mapaExcluidosPorAlerta);
+    renderTrechosConcedidosLayer();
+    resultPanel.style.display = 'block';
+    sharepointStatus.textContent = '';
+  }
 
   function setStep(n){
     [step1,step2,step3].forEach((s,i)=>{
@@ -1444,16 +1480,33 @@
       // x BR-376), o ponto GEOMETRICAMENTE mais próximo pode ser de uma BR que nem tem esse
       // km no trecho concedido de verdade, enquanto outra rodovia candidata, um pouco mais
       // longe no mapa mas ainda pertinho, é a que realmente cobre aquele km. Busca todos os
-      // candidatos de rodovia distintos perto do ponto (na UF que a malha indicou) e, se só
-      // UM deles tiver esse km dentro do próprio trecho concedido (± folga), usa esse em vez
-      // do mais próximo — só troca quando o km desempata sem ambiguidade; com 0 ou mais de 1
-      // candidato válido, mantém o comportamento antigo (ponto mais próximo).
+      // candidatos de rodovia distintos perto do ponto (na UF que a malha indicou) e usa o
+      // km pra FILTRAR quem é plausível — dentre os que sobram, o desempate é a distância
+      // geométrica (candidatos já vêm ordenados por ela). Duas rodovias da mesma
+      // concessionária podem correr bem próximas fisicamente e as duas terem SNV cobrindo o
+      // mesmo km (overlap real, não erro) — nesse caso, a mais perto geometricamente é a
+      // resposta certa, não motivo pra desistir de corrigir.
       const candidatos = findNearestTrechoCandidates(trechosIndex, lat, lon, nearest.uf, 5);
-      const comKmValido = candidatos.filter(c=> kmFazSentidoNaRodovia(km, c.rodovia, c.uf, snvTrechosConcessionaria) === true);
-      const escolhido = comKmValido.length === 1 ? comKmValido[0] : nearest;
-      // esse caso SEMPRE resulta numa correção de verdade (brCorrigida preenchido), então o
-      // texto "fora da UF/rodovia informada" continua fazendo sentido aqui.
-      return {alerta:'Coordenada fora da UF/rodovia informada (malha)', ufCorrigida: escolhido.uf, brCorrigida: escolhido.rodovia, tipoCorrigido: escolhido.tipo};
+      // Primeiro tenta casamento ESTRITO (sem folga) — evita que uma rodovia cujo trecho
+      // real termina bem ali só pareça válida por causa da folga de 2 km (ex.: BR-277/PR
+      // "cobre" um km que já é do BR-116 seguinte só com a folga). Só cai pra folga de 2 km
+      // (mais permissiva) se NADA bater estritamente — aí serve pra cobrir arredondamento
+      // de km perto da ponta do trecho.
+      let comKmValido = candidatos.filter(c=> kmFazSentidoNaRodovia(km, c.rodovia, c.uf, snvTrechosConcessionaria, c.tipo, 0) === true);
+      if(comKmValido.length === 0){
+        comKmValido = candidatos.filter(c=> kmFazSentidoNaRodovia(km, c.rodovia, c.uf, snvTrechosConcessionaria, c.tipo) === true);
+      }
+      if(comKmValido.length >= 1){
+        const escolhido = comKmValido[0]; // já ordenado por distância — o mais perto entre os que batem por km
+        return {alerta:'Coordenada fora da UF/rodovia informada (malha)', ufCorrigida: escolhido.uf, brCorrigida: escolhido.rodovia, tipoCorrigido: escolhido.tipo};
+      }
+      // Nenhum candidato validou por km+tipo sem ambiguidade (0 ou mais de 1) — não corrige
+      // com confiança nenhuma. Antes disso caía pro "ponto mais próximo de qualquer jeito"
+      // (nearest), mas esse ponto pode ser só ruído geométrico (rampa/conector perto de
+      // entroncamento que a malha marca com um Tipo que o SNV não confirma ali) — melhor
+      // ficar sinalizado (Alerta de Coordenada) e SEM correção confiável do que assumir
+      // Rodovia/UF/Tipo errados com aparência de certeza.
+      return {alerta:'Coordenada fora da UF/rodovia informada (malha)', ufCorrigida: uf, brCorrigida: '', tipoCorrigido: ''};
     }
     // UF bate — não corrige NADA, nem quando o ponto mais próximo da malha é de outra BR,
     // nem quando esse ponto está longe (malha esparsa ali). Só faz sentido corrigir a
@@ -1798,14 +1851,19 @@
   // tem cadastrado no SNV (com uma folga pequena — o km real de um sinistro pode passar
   // um pouco da ponta do trecho SNV sem ser um erro de rodovia).
   const TOLERANCIA_KM_FAZ_SENTIDO = 2;
-  function kmFazSentidoNaRodovia(km, rodovia, uf, snvTrechosConcessionaria){
+  function kmFazSentidoNaRodovia(km, rodovia, uf, snvTrechosConcessionaria, tipo, tolerancia){
     if(!snvTrechosConcessionaria || !snvTrechosConcessionaria.length || typeof km !== 'number' || !Number.isFinite(km)) return null; // sem dado suficiente pra decidir
     const brNum = normBR((String(rodovia).match(/\d{1,3}/)||[])[0] || '');
     if(!brNum) return null;
     const ufNorm = String(uf||'').trim().toUpperCase();
-    const doBrUf = snvTrechosConcessionaria.filter(t=> t.br===brNum && String(t.uf).trim().toUpperCase()===ufNorm);
-    if(!doBrUf.length) return false; // concessionária não tem NADA dessa BR+UF — não faz sentido
-    return doBrUf.some(t=> km >= t.kmi - TOLERANCIA_KM_FAZ_SENTIDO && km <= t.kmf + TOLERANCIA_KM_FAZ_SENTIDO);
+    const folga = tolerancia != null ? tolerancia : TOLERANCIA_KM_FAZ_SENTIDO;
+    // Quando um tipo específico é passado (ex.: "Acesso"), só considera trecho SNV DAQUELE
+    // tipo — sem isso, "SP tem Eixo Principal nesse km" bastava pra validar um candidato de
+    // Acesso que a malha geométrica achou por perto mas que o SNV não cobre como Acesso ali
+    // (o mesmo problema de rampa/conector "herdando" o tipo errado perto de entroncamento).
+    const doBrUf = snvTrechosConcessionaria.filter(t=> t.br===brNum && String(t.uf).trim().toUpperCase()===ufNorm && (!tipo || t.tipo===tipo));
+    if(!doBrUf.length) return false; // concessionária não tem NADA dessa BR+UF(+tipo) — não faz sentido
+    return doBrUf.some(t=> km >= t.kmi - folga && km <= t.kmf + folga);
   }
 
   // Índice de VMDA da aba auxiliar, só da concessionária selecionada (VMDA único vira
@@ -2154,11 +2212,14 @@
         // "PQ_ACIDENTE (3).xlsx"); sanitiza caracteres que não podem ir em nome de arquivo.
         const nomeBase = selectedConcessionaria ? sanitizarNomeArquivo(selectedConcessionaria) : lastFileBaseName;
         outFileName = 'Analise_' + nomeBase + '.xlsx';
-        renderStats(result.stats);
-        renderMap(result.mapPoints, result.stats.mapaExcluidosPorAlerta);
-        renderTrechosConcedidosLayer();
         enviarParaAnaliseDetalhada(outWorkbook, outFileName);
-        resultPanel.style.display = 'block';
+        const nomeConcessResultado = selectedConcessionaria || nomeBase;
+        resultadosPorConcessionaria.set(nomeConcessResultado, {
+          outWorkbook, outFileName, stats: result.stats,
+          mapPoints: result.mapPoints, mapaExcluidosPorAlerta: result.stats.mapaExcluidosPorAlerta
+        });
+        atualizarSeletorConcessionarias(nomeConcessResultado);
+        mostrarResultadoConcessionaria(nomeConcessResultado);
         const periodoMsg = (dateStart || dateEnd)
           ? 'Período aplicado: '+(dateStart?fmtDateBR(dateStart):'início dos dados')+' a '+(dateEnd?fmtDateBR(dateEnd):'fim dos dados')+' — '
           : 'Sem filtro de período (todos os sinistros da planilha) — ';
