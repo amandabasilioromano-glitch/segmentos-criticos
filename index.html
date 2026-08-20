@@ -1866,6 +1866,52 @@
     return idx;
   }
 
+  // Confere pela COORDENADA de verdade (não só pelo km) qual Tipo de trecho os sinistros
+  // dessa faixa realmente pertencem, usando o mesmo índice espacial do Mapa de trechos
+  // concedidos já usado pra corrigir Rodovia/UF (findNearestTrechoPoint). Só confia num tipo
+  // se a coordenada do sinistro estiver bem perto (≤2 km) de um ponto real da malha com
+  // esse tipo — não é "km bateu por coincidência", é "a coordenada cai em cima do Contorno/
+  // Acesso de verdade".
+  const DIST_MAX_TIPO_POR_COORD_KM = 2;
+  function tipoPorCoordenadas(sinistrosDaFaixa, uf, trechosIndex){
+    if(!trechosIndex || !sinistrosDaFaixa || !sinistrosDaFaixa.length) return null;
+    const contagem = new Map();
+    sinistrosDaFaixa.forEach(s=>{
+      if(typeof s.lat !== 'number' || typeof s.lon !== 'number') return;
+      const nearest = findNearestTrechoPoint(trechosIndex, s.lat, s.lon, uf);
+      if(nearest && nearest.tipo && nearest.distKm <= DIST_MAX_TIPO_POR_COORD_KM){
+        contagem.set(nearest.tipo, (contagem.get(nearest.tipo)||0)+1);
+      }
+    });
+    let melhor = null, melhorCount = 0;
+    contagem.forEach((c,tipo)=>{ if(c>melhorCount){ melhorCount=c; melhor=tipo; } });
+    return melhor;
+  }
+
+  // Quando o Tipo de eixo declarado (ex.: Eixo Principal) não tem NENHUM segmento SNV/VMDa
+  // cobrindo esse km — porque na prática aquele trecho da rodovia é fisicamente um Contorno,
+  // Acesso, Variante etc., não o eixo principal de verdade —, usa o VMDa do Tipo que a
+  // COORDENADA dos sinistros dessa faixa realmente confirma (tipoConfirmadoPorCoord, vindo de
+  // tipoPorCoordenadas). Sem confirmação por coordenada (sinistro sem lat/lon, ou nenhum
+  // ponto da malha perto o bastante), não arrisca — fica sem dado mesmo, em vez de adivinhar
+  // por coincidência de km.
+  function buscarVmdaOutroTipo(br, uf, kmIni, kmFim, tipoConfirmadoPorCoord, vmdaIndex, auxVmdaIndex){
+    if(!tipoConfirmadoPorCoord) return null;
+    const key = br+'||'+uf+'||'+tipoConfirmadoPorCoord;
+    for(const indice of [auxVmdaIndex, vmdaIndex]){
+      if(!indice) continue;
+      const segs = indice.get(key);
+      if(!segs) continue;
+      let sumW=0, sumC=0, sumD=0;
+      segs.forEach(seg=>{
+        const ov = Math.min(seg.kmf,kmFim) - Math.max(seg.kmi,kmIni);
+        if(ov>0){ sumW+=ov; sumC+=ov*seg.vc; sumD+=ov*seg.vd; }
+      });
+      if(sumW>0) return {VMDa_c: Math.round(sumC/sumW), VMDa_d: Math.round(sumD/sumW), tipo: tipoConfirmadoPorCoord};
+    }
+    return null;
+  }
+
   // Pega o número da rodovia de qualquer prefixo (BR-116, PR-092, MG-050...) — o que importa
   // pra achar o trecho certo é o número + a UF, não a letra do prefixo. Exige 2-3 letras
   // (prefixo de rodovia de verdade), não 1 só — senão "Acesso N 03" vira "BR-003" por engano.
@@ -2049,6 +2095,7 @@
         if(result.stats.vmdaStats){
           msg += ' VMDa: '+result.stats.vmdaStats.direto+' trechos SNV com dado direto, '+result.stats.vmdaStats.preenchido+' preenchidos por vizinhança'+(result.stats.vmdaStats.auxiliar ? ', '+result.stats.vmdaStats.auxiliar+' cobertos pela planilha auxiliar' : '')+', '+result.stats.vmdaStats.semDado+' sem nenhum dado próximo.';
           if(result.stats.intervalosReplicados) msg += ' '+result.stats.intervalosReplicados+' faixas da Intervalo sem SNV sobrepondo usaram o VMDa da faixa mais próxima do mesmo trecho.';
+          if(result.stats.intervalosOutroTipo) msg += ' '+result.stats.intervalosOutroTipo+' faixas sem nenhum dado no Tipo de eixo declarado usaram VMDa de outro Tipo de trecho confirmado pela coordenada dos sinistros (ex.: Eixo Principal sem cobertura usou o Contorno, porque a coordenada cai em cima dele).';
         }
         setStatus(msg);
         setStep(3);
@@ -2274,7 +2321,7 @@
     // 3) Abas Rodovia (trechos detectados automaticamente) + Intervalo (faixas de até 1 km) —
     // montadas ANTES da Analise pra poder linkar cada sinistro ao ID/Criticidade da faixa
     // em que ele caiu (colunas AC/AD da Analise).
-    const { rodoviaWs, intervaloWs, trechos, totalIntervalos, intervalosReplicados, criticidadeStats } = buildRodoviaEIntervalo(sinistros, dateStart, dateEnd, vmdaIndex, snvTrechosConcessionaria, kValue, concessionariaSelecionada, auxTrechosList, auxVmdaIndex);
+    const { rodoviaWs, intervaloWs, trechos, totalIntervalos, intervalosReplicados, intervalosOutroTipo, criticidadeStats } = buildRodoviaEIntervalo(sinistros, dateStart, dateEnd, vmdaIndex, snvTrechosConcessionaria, kValue, concessionariaSelecionada, auxTrechosList, auxVmdaIndex, trechosIndex);
     XLSX.utils.book_append_sheet(workbook, rodoviaWs, 'Rodovia');
     XLSX.utils.book_append_sheet(workbook, intervaloWs, 'Intervalo');
 
@@ -2334,6 +2381,7 @@
     stats.trechos = trechos.length;
     stats.intervalos = totalIntervalos;
     stats.intervalosReplicados = intervalosReplicados;
+    stats.intervalosOutroTipo = intervalosOutroTipo;
     stats.criticidade = criticidadeStats;
     stats.kUsado = (typeof kValue === 'number' && isFinite(kValue)) ? kValue : 1.645;
 
@@ -2739,7 +2787,7 @@
     return finalTrechos;
   }
 
-  function buildRodoviaEIntervalo(sinistros, dateStart, dateEnd, vmdaIndex, snvTrechosConcessionaria, kValue, concessionariaSelecionada, auxTrechosList, auxVmdaIndex){
+  function buildRodoviaEIntervalo(sinistros, dateStart, dateEnd, vmdaIndex, snvTrechosConcessionaria, kValue, concessionariaSelecionada, auxTrechosList, auxVmdaIndex, trechosIndex){
     let trechos = buildTrechosFinal(sinistros, snvTrechosConcessionaria, concessionariaSelecionada, auxTrechosList);
 
     // Funde trecho "pooled" (Acesso/Contorno/Variante — usa a rodovia-mãe só pra entrar no
@@ -2829,6 +2877,7 @@
 
     let seq = 0;
     let intervalosReplicados = 0;
+    let intervalosOutroTipo = 0;
     trechos.forEach(t=>{
       const breakpoints = buildIntervalBreakpoints(t.trueStart, t.trueEnd);
       const key = t.rodovia + '||' + t.uf + '||' + (t.tipo || '');
@@ -2955,6 +3004,27 @@
         });
       }
 
+      // Ainda sem nada? O Tipo de eixo inteiro (ex.: Eixo Principal) não tem NENHUM
+      // segmento SNV/VMDa nesse km — geralmente porque ali a pista de verdade é um
+      // Contorno/Acesso/Variante, não o eixo principal. Confere pela COORDENADA dos
+      // sinistros dessa faixa (não só pelo km) qual Tipo de trecho é esse de verdade, e
+      // busca o VMDa desse tipo confirmado antes de desistir de vez.
+      if(btVmda.br && trechosIndex){
+        trechoRows.forEach(r=>{
+          if(r.VMDa_c!=null) return;
+          const sinistrosDaFaixa = grupoSinistros.filter(s=> s.km >= r.kmIni && s.km < r.kmFim);
+          const tipoPelaCoord = tipoPorCoordenadas(sinistrosDaFaixa, t.uf, trechosIndex);
+          if(!tipoPelaCoord || tipoPelaCoord === btVmda.tipo) return;
+          const achado = buscarVmdaOutroTipo(btVmda.br, t.uf, r.kmIni, r.kmFim, tipoPelaCoord, vmdaIndex, auxVmdaIndex);
+          if(achado){
+            r.VMDa_c = achado.VMDa_c;
+            r.VMDa_d = achado.VMDa_d;
+            r.vmdaOutroTipo = achado.tipo;
+            intervalosOutroTipo++;
+          }
+        });
+      }
+
       let intervalosReplicadosTrecho = 0;
       trechoRows.forEach(r=>{ if(r.vmdaReplicado) intervalosReplicadosTrecho++; });
       intervalosReplicados += intervalosReplicadosTrecho;
@@ -3041,7 +3111,7 @@
       intervaloWs['AI'+r] = {t:'str', v: CLASSE_LABEL[classe] ?? '', f: 'IF(L'+r+'=0,"Não crítico",IF(AE'+r+'="","",IF(AE'+r+'>AH'+r+',"Crítico","Não crítico")))'};
     }
 
-    return { rodoviaWs, intervaloWs, trechos, totalIntervalos: intervaloOut.length - 2, intervalosReplicados, criticidadeStats };
+    return { rodoviaWs, intervaloWs, trechos, totalIntervalos: intervaloOut.length - 2, intervalosReplicados, intervalosOutroTipo, criticidadeStats };
   }
 
   // Replica em JS a mesma conta das fórmulas AE:AI (Ip, Exposição, Ip acumulado, Ic,
