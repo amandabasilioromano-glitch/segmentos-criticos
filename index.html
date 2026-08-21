@@ -429,6 +429,14 @@
         responsável por eles (a aba <strong>Rodovia</strong> do arquivo final mostra uma observação
         nesses casos).
       </p>
+      <div id="trechoTransferidoToggleWrap" style="display:none; margin-top:12px; padding-top:12px; border-top:1px solid var(--line);">
+        <label style="display:flex; align-items:flex-start; gap:8px; font-size:12.5px; color:#3B3A34; cursor:pointer;">
+          <input type="checkbox" id="considerarTrechoAtualChk" style="margin-top:3px;">
+          <span>Considerar só o <strong>trecho atual</strong> — em vez de buscar o VMDA na concessionária
+          responsável hoje, exclui esses sinistros inteiramente da análise desta concessionária
+          (fica só com os trechos que ela ainda tem de verdade agora).</span>
+        </label>
+      </div>
     </details>
     <div id="concessionariaPanel" style="display:none; margin-bottom:16px;">
       <label style="font-size:12px; font-family:'JetBrains Mono',monospace; color:var(--muted); display:block; margin-bottom:6px;">
@@ -469,8 +477,8 @@
     <details class="help" style="margin-bottom:16px;">
       <summary>Observação: cálculo, período e Segmento Homogêneo</summary>
       <p style="font-size:12.5px; color:#3B3A34; line-height:1.6; margin:8px 0 0;">
-        As colunas AE a AI da aba Intervalo saem como fórmulas do Excel, não valores fixos — editando
-        o VMDa (colunas AB a AD) depois de baixada, elas recalculam sozinhas. O período usado na
+        As colunas AC a AG da aba Intervalo saem como fórmulas do Excel, não valores fixos — editando
+        o VMDa (coluna AB) depois de baixada, elas recalculam sozinhas. O período usado na
         fórmula de exposição é o mesmo período de análise definido acima (ou o intervalo de datas dos
         sinistros, se você não filtrar). O Segmento Homogêneo (SH) usado no acumulado é Rodovia
         (corrigida) + UF (corrigida) + Tipo de eixo.
@@ -622,6 +630,11 @@
 
   let outWorkbook = null;
   let outFileName = 'Analise.xlsx';
+  // "Considerar só o trecho atual" (etapa 02) — quando ligado, sinistros num trecho que já
+  // passou pra outra concessionária (ver HISTORICO_TRANSFERENCIA_TRECHOS) somem da análise
+  // dessa concessionária inteiramente, em vez de entrar usando o VMDA da concessionária
+  // atual responsável por ele.
+  let considerarTrechoAtual = false;
 
   // Acumula um resultado por concessionária processada — processar uma segunda (ou
   // terceira...) concessionária não substitui a anterior, fica disponível pra trocar de
@@ -1103,6 +1116,14 @@
   const concessionariaSelect = document.getElementById('concessionariaSelect');
 
   const concessionariaHint = document.getElementById('concessionariaHint');
+  const trechoTransferidoToggleWrap = document.getElementById('trechoTransferidoToggleWrap');
+  const considerarTrechoAtualChk = document.getElementById('considerarTrechoAtualChk');
+  considerarTrechoAtualChk.addEventListener('change', async ()=>{
+    considerarTrechoAtual = considerarTrechoAtualChk.checked;
+    // Muda o resultado de verdade — se já tinha uma PQ_ACIDENTE processada, reprocessa na
+    // hora com a opção nova, sem precisar reenviar nada.
+    if(slots.pq.best) await runProcessing();
+  });
 
   function updateConcessionariaUI(){
     const options = getConcessionariaOptions();
@@ -1122,6 +1143,17 @@
       }
     } else {
       concessionariaHint.textContent = '';
+    }
+
+    // O toggle "trecho atual" só faz sentido pras concessionárias que têm trecho no
+    // histórico de transferência (ver HISTORICO_TRANSFERENCIA_TRECHOS) — pras outras, some
+    // (e desliga sozinho, senão uma troca de concessionária deixaria a opção "presa" ligada
+    // sem efeito nenhum, confundindo).
+    const aplicavel = temTrechoTransferidoAplicavel(selectedConcessionaria);
+    trechoTransferidoToggleWrap.style.display = aplicavel ? 'block' : 'none';
+    if(!aplicavel && considerarTrechoAtual){
+      considerarTrechoAtual = false;
+      considerarTrechoAtualChk.checked = false;
     }
   }
 
@@ -1246,6 +1278,31 @@
     if(rawNorm === alvoNorm) return true;
     const mapeado = CONCESSIONARIA_MAP.get(rawNorm);
     return !!mapeado && normalizeConcessionaria(mapeado) === alvoNorm;
+  }
+
+  // Se a concessionária SELECIONADA tem algum trecho no histórico de transferência (ver
+  // HISTORICO_TRANSFERENCIA_TRECHOS, declarado mais abaixo) — usado pra só mostrar a opção
+  // "considerar trecho atual" quando ela realmente se aplica.
+  function temTrechoTransferidoAplicavel(concessionariaSelecionada){
+    return HISTORICO_TRANSFERENCIA_TRECHOS.some(h => concessionariaEquivale(h.de, concessionariaSelecionada));
+  }
+
+  // Confere se um br+uf+km, dentro da concessionária selecionada, cai num trecho que HOJE
+  // pertence a outra concessionária. Duas formas de transferência: (1) um trecho
+  // específico, com br/uf/km já definidos na própria entrada (ex.: Motiva RioSP ->
+  // Ecovias Rio Minas, só o BR-116/RJ km 170-213,9); (2) "a concessão toda passou a fazer
+  // parte de outra" (sem br/km na entrada, ex.: Triunfo Concebra -> Way-262/Way-153) —
+  // nesse caso, confia no SNV: se a concessionária ATUAL (paraAtual) tem cobertura de
+  // verdade nesse br+uf+km, esse pedaço já não é mais da selecionada.
+  function estaEmTrechoTransferido(br, uf, km, concessionariaSelecionada){
+    if(typeof km !== 'number' || !Number.isFinite(km) || !br) return false;
+    const brNum = normBR(br);
+    return HISTORICO_TRANSFERENCIA_TRECHOS.some(h=>{
+      if(!concessionariaEquivale(h.de, concessionariaSelecionada)) return false;
+      if(h.br) return normBR(h.br)===brNum && h.uf===uf && km>=h.kmi && km<=h.kmf;
+      if(!slots.snv.data) return false;
+      return slots.snv.data.some(r=> concessionariaEquivale(r.concessionaria, h.paraAtual) && r.br===brNum && r.uf===uf && r.kmi<=km && r.kmf>=km);
+    });
   }
 
   // Extrai o nome da concessionária de dentro da própria PQ_ACIDENTE (coluna NO_FANTASIA ou
@@ -2233,6 +2290,7 @@
     return m ? m[1].padStart(3,'0') : null;
   }
 
+  const UFS_BRASIL = new Set(['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO']);
   function detectTipoFromRodovia(rodovia){
     const n = normalize(rodovia);
     if(n.indexOf('variante') !== -1) return 'Variante';
@@ -2241,6 +2299,11 @@
     if(n.indexOf('travessia') !== -1) return 'Travessia Urbana';
     if(n.indexOf('anel') !== -1) return 'Anel';
     if(n.indexOf('estadual') !== -1) return 'Estadual';
+    // Rodovia estadual quase nunca escreve a palavra "estadual" no texto — só o prefixo já
+    // diz isso (ex.: "PR-444", "SC-401"). Prefixo de 2 letras que é sigla de UF de verdade
+    // (e não "BR", que é federal) é sinal suficiente.
+    const m = String(rodovia||'').trim().match(/^([A-Z]{2})-?\s?\d/i);
+    if(m && m[1].toUpperCase() !== 'BR' && UFS_BRASIL.has(m[1].toUpperCase())) return 'Estadual';
     return 'Eixo Principal';
   }
 
@@ -2249,6 +2312,15 @@
   // administrado como rodovia estadual, não federal).
   function isTipoPrincipal(tipo){
     return tipo === 'Eixo Principal' || tipo === 'Estadual';
+  }
+
+  // Monta o rótulo da rodovia com o prefixo certo: "BR-376" pra rodovia federal, mas
+  // "PR-444" (não "BR-444") pra estadual — o número por si só (guardado numa coluna
+  // chamada "BR" nas planilhas de origem, mesmo pra rodovia estadual) não diz sozinho se é
+  // federal ou estadual; isso vem do Tipo de trecho ("Estadual") e da UF.
+  function rotuloRodovia(numero, uf, tipo){
+    if(!numero) return null;
+    return (tipo === 'Estadual' ? uf : 'BR') + '-' + numero;
   }
 
   async function handleFiles(fileList){
@@ -2573,6 +2645,13 @@
       const tipoPorCoordenada = corrigirTipoPorCoordenada(brDeteccao, ufDeteccao, lat, lon, resolvidoOriginal.tipo, trechosIndex, km, snvTrechosConcessionaria);
       const tipoEfetivo = tipoPorCoordenada || resolvidoOriginal.tipo;
 
+      // "Considerar só o trecho atual" (opção da etapa 02): pula de vez o sinistro que cai
+      // num trecho que hoje já não é mais dessa concessionária (ver
+      // estaEmTrechoTransferido) — não entra nem na Analise, nem no Intervalo/Rodovia.
+      if(considerarTrechoAtual && estaEmTrechoTransferido(brDeteccao, ufDeteccao, km, concessionariaSelecionada)){
+        return;
+      }
+
       const row = [
         i+1,
         dataAcidente,
@@ -2628,7 +2707,7 @@
       // Rodovia/UF só pro RÓTULO/FILTRO do mapa — não mexe em limite de trecho nenhum, só
       // decide como o pontinho aparece no filtro Rodovia/UF (usa o BR-mãe já resolvido).
       const brResolvido = resolvidoOriginal.br;
-      row._rodoviaAgrupamento = (coordAlerta && brCorrigida) ? brCorrigida : (brResolvido ? ('BR-'+brResolvido) : rodovia);
+      row._rodoviaAgrupamento = (coordAlerta && brCorrigida) ? brCorrigida : (brResolvido ? rotuloRodovia(brResolvido, uf, tipoEfetivo) : rodovia);
       row._ufAgrupamento = (coordAlerta && brCorrigida) ? ufCorrigida : uf;
 
       stats.total++;
@@ -3088,7 +3167,7 @@
         // verdade — assim não fica um buraco no meio da rodovia principal E não repete o
         // mesmo km físico sob duas BRs diferentes. Se nenhuma das duas tiver sinistro,
         // mantém a principal (comportamento padrão).
-        const label = isTipoPrincipal(t.tipo) ? ('BR-'+t.br) : (t.tipo+' - BR-'+t.br+' - '+t.uf);
+        const label = isTipoPrincipal(t.tipo) ? rotuloRodovia(t.br, t.uf, t.tipo) : (t.tipo+' - '+rotuloRodovia(t.br, t.uf, t.tipo)+' - '+t.uf);
         finalTrechos.push({rodovia:label, uf:t.uf, trueStart:t.kmi, trueEnd:t.kmf, tipo:t.tipo, br:t.br, coincidente:false, grupoIds:t.grupoIds||[], temSinistro:false});
       });
 
@@ -3220,14 +3299,14 @@
     rodoviaWs['!cols'] = [{wch:24},{wch:6},{wch:16},{wch:16},{wch:16},{wch:44}];
 
     // ---- aba Intervalo (faixas de até 1 km dentro de cada trecho, pontas no km real) ----
-    const HEADER_ROW1 = ['','','','','','','','', 'Sinistro','','','','', 'Gravidade Animal','','', 'Gravidade Pedestre','','','','', 'Gravidade Vítima','','','','','', 'VMDa','','', '','','','',''];
+    const HEADER_ROW1 = ['','','','','','','','', 'Sinistro','','','','', 'Gravidade Animal','','', 'Gravidade Pedestre','','','','', 'Gravidade Vítima','','','','','', '','','','',''];
     const HEADER_ROW2 = [
       'ID','Concessionária','Rodovia (corrigida)','UF (corrigida)','Tipo de eixo','Km Inicial','Km Final','Intervalo',
       'ASV','ACV','ACO','Sinistros','UPS',
       'Ileso','Ferido','Morto',
       'Ileso','Levemente ferido','Moderadamente ferido','Gravemente ferido','Morto',
       'Não identificado','Ileso','Levemente ferido','Moderadamente ferido','Gravemente ferido','Morto',
-      'VMDa_c','VMDa_d','VMDa',
+      'VMDa',
       'Ip','Exposição (acumulada)','Ip (acumulado)','Ic','Criticidade'
     ];
     const intervaloOut = [HEADER_ROW1, HEADER_ROW2];
@@ -3259,8 +3338,9 @@
       // a rodovia-mãe na coluna Rodovia da Intervalo — assim entra no mesmo Segmento
       // Homogêneo dela pro cálculo de Ip/Ic, em vez de formar um grupo isolado (pequeno
       // demais pra classificar sozinho). O Tipo de trecho continua mostrando o tipo real.
-      const rodoviaExibida = btVmda.br ? ('BR-'+btVmda.br) : t.rodovia;
-      const rodoviaUfLabel = /^br/i.test(rodoviaExibida) ? (rodoviaExibida + '/' + t.uf) : rodoviaExibida;
+      const rodoviaExibida = btVmda.br ? rotuloRodovia(btVmda.br, t.uf, btVmda.tipo) : t.rodovia;
+      const rodoviaEhEstadual = btVmda.br && btVmda.tipo === 'Estadual';
+      const rodoviaUfLabel = (btVmda.br && !rodoviaEhEstadual) ? (rodoviaExibida + '/' + t.uf) : rodoviaExibida;
 
       const trechoRows = []; // linhas deste trecho, montadas antes de preencher VMDa em branco
 
@@ -3307,7 +3387,7 @@
           });
           if(melhorUf !== t.uf && melhorContagem > totalNaFaixa/2) ufFaixaCorrigida = melhorUf;
         }
-        const rodoviaUfCorrigidaLabel = /^br/i.test(rodoviaExibida) ? (rodoviaExibida + '/' + ufFaixaCorrigida) : rodoviaExibida;
+        const rodoviaUfCorrigidaLabel = (btVmda.br && !rodoviaEhEstadual) ? (rodoviaExibida + '/' + ufFaixaCorrigida) : rodoviaExibida;
 
         const Sinistros = ASV+ACV+ACO;
         const UPS = ASV*1 + ACV*5 + ACO*13; // ASV=1, ACV=5, ACO=13 (mesmos pesos do exemplo)
@@ -3387,8 +3467,6 @@
       intervalosReplicados += intervalosReplicadosTrecho;
 
       trechoRows.forEach(r=>{
-        const VMDa_c = r.VMDa_c!=null ? r.VMDa_c : null;
-        const VMDa_d = r.VMDa_d!=null ? r.VMDa_d : null;
         const VMDa = r.VMDa_c!=null ? (r.VMDa_c + r.VMDa_d) : null;
         intervaloOut.push([
           r.seq, concessionariaSelecionada || '', rodoviaExibida, r.ufFaixaCorrigida, btVmda.tipo || '', r.kmIni, r.kmFim, r.label,
@@ -3396,8 +3474,8 @@
           r.animal[0], r.animal[1], r.animal[2],
           r.ped[0], r.ped[1], r.ped[2], r.ped[3], r.ped[4],
           r.naoIdentVitima, r.vit[0], r.vit[1], r.vit[2], r.vit[3], r.vit[4],
-          VMDa_c, VMDa_d, VMDa,
-          null, null, null, null, null // AE:AI — preenchidas como fórmulas depois (Ip, Exposição, Ip acum., Ic, Criticidade)
+          VMDa,
+          null, null, null, null, null // AC:AG — preenchidas como fórmulas depois (Ip, Exposição, Ip acum., Ic, Criticidade)
         ]);
       });
     });
@@ -3431,9 +3509,7 @@
       XLSX.utils.decode_range('I1:K1'),
       XLSX.utils.decode_range('N1:P1'),
       XLSX.utils.decode_range('Q1:U1'),
-      XLSX.utils.decode_range('V1:AA1'),
-      XLSX.utils.decode_range('AB1:AD1'),
-      XLSX.utils.decode_range('AE1:AI1')
+      XLSX.utils.decode_range('V1:AA1')
     ];
     intervaloWs['!cols'] = [
       {wch:6},{wch:22},{wch:14},{wch:11},{wch:16},{wch:9},{wch:9},{wch:10},
@@ -3441,13 +3517,13 @@
       {wch:6},{wch:6},{wch:6},
       {wch:6},{wch:15},{wch:17},{wch:15},{wch:6},
       {wch:15},{wch:6},{wch:15},{wch:17},{wch:15},{wch:6},
-      {wch:9},{wch:9},{wch:9},
+      {wch:9},
       {wch:9},{wch:16},{wch:13},{wch:9},{wch:12}
     ];
 
-    // ---- colunas AE:AI como FÓRMULAS, mas com o VALOR JÁ CALCULADO junto (célula com
-    // f E v ao mesmo tempo) — a fórmula garante que editar VMDa_c/VMDa_d/VMDa (AB:AD) na
-    // planilha recalcula sozinho no Excel/LibreOffice; o valor em cache garante que quem
+    // ---- colunas AC:AG como FÓRMULAS, mas com o VALOR JÁ CALCULADO junto (célula com
+    // f E v ao mesmo tempo) — a fórmula garante que editar o VMDa (AB) na planilha
+    // recalcula sozinho no Excel/LibreOffice; o valor em cache garante que quem
     // lê o arquivo xlsx bruto SEM abrir num programa de planilha antes (outra ferramenta,
     // um script, o dashboard de trechos críticos) já enxerga o resultado certo, sem
     // precisar de um recálculo manual primeiro — sem isso, a célula aparece vazia até
@@ -3461,11 +3537,11 @@
       const vals = criticidadeStats.valoresPorId.get(idFaixa) || {};
       const classe = criticidadeStats.classePorId.get(idFaixa);
       const setNum = (v)=> v!=null ? {t:'n', v} : {t:'str', v:''};
-      intervaloWs['AE'+r] = Object.assign(setNum(vals.AE), {f: 'IFERROR(M'+r+'/(AD'+r+'*(G'+r+'-F'+r+')*'+dias+'*10^-6),"")'});
-      intervaloWs['AF'+r] = Object.assign(setNum(vals.AF), {f: 'IFERROR(SUMPRODUCT(($C$3:$C$'+lastRow+'=C'+r+')*($D$3:$D$'+lastRow+'=D'+r+')*($E$3:$E$'+lastRow+'=E'+r+')*$AD$3:$AD$'+lastRow+'*($G$3:$G$'+lastRow+'-$F$3:$F$'+lastRow+')*'+dias+'*10^-6),"")'});
-      intervaloWs['AG'+r] = Object.assign(setNum(vals.AG), {f: 'IFERROR(SUMIFS($M$3:$M$'+lastRow+',$C$3:$C$'+lastRow+',C'+r+',$D$3:$D$'+lastRow+',D'+r+',$E$3:$E$'+lastRow+',E'+r+')/AF'+r+',"")'});
-      intervaloWs['AH'+r] = Object.assign(setNum(vals.AH), {f: 'IFERROR(MAX(0,AG'+r+'+'+kNum+'*SQRT(AG'+r+'/AF'+r+')-(0.5/AF'+r+')),"")'});
-      intervaloWs['AI'+r] = {t:'str', v: CLASSE_LABEL[classe] ?? '', f: 'IF(L'+r+'=0,"Não crítico",IF(AE'+r+'="","",IF(AE'+r+'>AH'+r+',"Crítico","Não crítico")))'};
+      intervaloWs['AC'+r] = Object.assign(setNum(vals.AE), {f: 'IFERROR(M'+r+'/(AB'+r+'*(G'+r+'-F'+r+')*'+dias+'*10^-6),"")'});
+      intervaloWs['AD'+r] = Object.assign(setNum(vals.AF), {f: 'IFERROR(SUMPRODUCT(($C$3:$C$'+lastRow+'=C'+r+')*($D$3:$D$'+lastRow+'=D'+r+')*($E$3:$E$'+lastRow+'=E'+r+')*$AB$3:$AB$'+lastRow+'*($G$3:$G$'+lastRow+'-$F$3:$F$'+lastRow+')*'+dias+'*10^-6),"")'});
+      intervaloWs['AE'+r] = Object.assign(setNum(vals.AG), {f: 'IFERROR(SUMIFS($M$3:$M$'+lastRow+',$C$3:$C$'+lastRow+',C'+r+',$D$3:$D$'+lastRow+',D'+r+',$E$3:$E$'+lastRow+',E'+r+')/AD'+r+',"")'});
+      intervaloWs['AF'+r] = Object.assign(setNum(vals.AH), {f: 'IFERROR(MAX(0,AE'+r+'+'+kNum+'*SQRT(AE'+r+'/AD'+r+')-(0.5/AD'+r+')),"")'});
+      intervaloWs['AG'+r] = {t:'str', v: CLASSE_LABEL[classe] ?? '', f: 'IF(L'+r+'=0,"Não crítico",IF(AC'+r+'="","",IF(AC'+r+'>AF'+r+',"Crítico","Não crítico")))'};
     }
 
     return { rodoviaWs, intervaloWs, trechos, totalIntervalos: intervaloOut.length - 2, intervalosReplicados, intervalosOutroTipo, criticidadeStats };
@@ -3484,7 +3560,7 @@
     const grupoKey = row => row[2]+'\u0001'+row[3]+'\u0001'+row[4]; // C||D||E
     const grupos = new Map(); // chave C||D||E -> {sumAE, sumUps}
     dataRows.forEach(row=>{
-      const F = row[5], G = row[6], M = row[12], AD = row[29];
+      const F = row[5], G = row[6], M = row[12], AD = row[27];
       const ext = G - F;
       const contribAF = (AD!=null ? AD : 0) * ext * dias * 1e-6;
       const key = grupoKey(row);
@@ -3520,7 +3596,7 @@
     const valoresPorId = new Map(); // ID da faixa -> {AE,AF,AG,AH} — usado pra gravar o valor em cache das fórmulas AE:AI (sem isso, quem abrir o xlsx sem recalcular no Excel/LibreOffice vê a célula vazia)
 
     dataRows.forEach(row=>{
-      const id = row[0], rodovia = row[2], uf = row[3], F = row[5], G = row[6], L = row[11], M = row[12], AD = row[29];
+      const id = row[0], rodovia = row[2], uf = row[3], F = row[5], G = row[6], L = row[11], M = row[12], AD = row[27];
       const asv = row[8], acv = row[9], aco = row[10];
       const ext = G - F;
 
