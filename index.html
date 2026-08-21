@@ -2308,11 +2308,23 @@
       }
     }
 
-    // tenta casar automaticamente a concessionária detectada na PQ_ACIDENTE com o SNV
+    // tenta casar automaticamente a concessionária detectada na PQ_ACIDENTE com o SNV —
+    // primeiro pelo nome de dentro do arquivo (coluna NO_FANTASIA), e se isso não bater
+    // (nome digitado diferente do SNV, várias concessionárias misturadas no arquivo,
+    // etc.), tenta pelo nome do próprio ARQUIVO — o padrão "PQ_ACIDENTE_<Concessionária>.xlsx"
+    // geralmente escreve o nome certinho, então é um bom plano B antes de desistir e pedir
+    // seleção manual.
     const concessOptions = getConcessionariaOptions();
     if(concessOptions.length && !selectedConcessionaria && slots.pq.concessionariaRaw){
       const matched = matchConcessionaria(slots.pq.concessionariaRaw, concessOptions);
       if(matched) selectedConcessionaria = matched;
+    }
+    if(concessOptions.length && !selectedConcessionaria && slots.pq.file){
+      const nomeDoArquivo = slots.pq.file.replace(/\.(xlsx|xls)$/i,'').replace(/^PQ[_-]?ACIDENTE[_-]?/i,'').replace(/_/g,' ').trim();
+      if(nomeDoArquivo){
+        const matchedPeloArquivo = matchConcessionaria(nomeDoArquivo, concessOptions);
+        if(matchedPeloArquivo) selectedConcessionaria = matchedPeloArquivo;
+      }
     }
 
     renderChecklist();
