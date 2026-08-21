@@ -1000,11 +1000,12 @@
             const file = await item.handle.getFile();
             // Se a concessionária dessa PQ_ACIDENTE não for reconhecida automaticamente
             // (nome não bate com nenhuma do SNV embutido), o processamento fica esperando
-            // seleção manual e NÃO entra no acumulador — detecta isso comparando o tamanho
-            // do acumulador antes/depois, pra não deixar passar batido sem avisar.
-            const tamanhoAntes = resultadosPorConcessionaria.size;
+            // seleção manual e "selectedConcessionaria" continua vazio — é esse o sinal de
+            // falha, não o tamanho do acumulador (que não muda quando REPROCESSA uma
+            // concessionária que já tinha entrado antes nessa sessão — atualiza a entrada
+            // existente em vez de criar uma nova, e isso não é falha nenhuma).
             await handleFiles([file]);
-            if(resultadosPorConcessionaria.size === tamanhoAntes) naoReconhecidas.push(item.name);
+            if(!selectedConcessionaria) naoReconhecidas.push(item.name);
           }catch(err){
             console.error('falha ao processar '+item.name+':', err);
             naoReconhecidas.push(item.name+' (erro: '+err.message+')');
