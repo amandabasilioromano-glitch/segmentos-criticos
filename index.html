@@ -2325,7 +2325,7 @@
       if(concessOptions.length && !selectedConcessionaria){
         setStatus('Selecione acima qual concessionária são os dados desta PQ_ACIDENTE antes de gerar o resultado.', false);
       } else {
-        runProcessing();
+        await runProcessing();
       }
     } else if(!problems.length){
       setStatus('Envie a planilha PQ_ACIDENTE para gerar o resultado (SNV e VMDa são opcionais, só liberam o VMDA na Intervalo).', false);
@@ -2333,10 +2333,12 @@
   }
 
   function runProcessing(){
-    if(!slots.pq.best) return;
+    return new Promise((resolve)=>{
+    if(!slots.pq.best){ resolve(); return; }
     const concessOptions = getConcessionariaOptions();
     if(concessOptions.length && !selectedConcessionaria){
       setStatus('Selecione acima qual concessionária são os dados desta PQ_ACIDENTE antes de gerar o resultado.', false);
+      resolve();
       return;
     }
     const best = slots.pq.best;
@@ -2419,7 +2421,9 @@
         setStatus('Erro ao processar: '+err.message, true);
         setStep(1);
       }
+      resolve();
     }, 30);
+    });
   }
 
   function processSheet(aoa, headerRow, dateStart, dateEnd, vmdaIndex, snvListWithVmda, snvTrechosConcessionaria, kValue, concessionariaSelecionada, auxTrechosList, auxVmdaIndex, trechosIndex){
