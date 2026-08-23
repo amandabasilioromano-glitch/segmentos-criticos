@@ -3421,23 +3421,37 @@
         // pareamento com o código da BR coincidente — ver computeSnvVmda) em vez de ficar
         // em branco.
         let VMDa_c = null, VMDa_d = null;
+        let kmIniEfetivo = kmIni, kmFimEfetivo = kmFim;
         [vmdaSegsAux, vmdaSegsSnv].some(vmdaSegs=>{
           if(!vmdaSegs) return false;
-          let sumW=0, sumC=0, sumD=0;
+          let sumW=0, sumC=0, sumD=0, segKmiMin=null, segKmfMax=null;
           vmdaSegs.forEach(seg=>{
             const ov = pesoSobreposicao(seg, kmIni, kmFim);
-            if(ov>0){ sumW+=ov; sumC+=ov*seg.vc; sumD+=ov*seg.vd; }
+            if(ov>0){
+              sumW+=ov; sumC+=ov*seg.vc; sumD+=ov*seg.vd;
+              if(segKmiMin==null || seg.kmi<segKmiMin) segKmiMin = seg.kmi;
+              if(segKmfMax==null || seg.kmf>segKmfMax) segKmfMax = seg.kmf;
+            }
           });
           if(sumW>0){
             VMDa_c = Math.round(sumC/sumW);
             VMDa_d = Math.round(sumD/sumW);
+            // Faixa de sinistro único (Km Inicial = Km Final) não tem extensão nenhuma —
+            // sem isso, o Ip fica indefinido (divide pela extensão, que seria zero km).
+            // Usa a extensão REAL do trecho de VMDA que cobre esse ponto (ex.: o acesso
+            // inteiro vai de 0 a 0,317 km) em vez de deixar a faixa como um ponto
+            // matemático sem tamanho nenhum.
+            if(kmIni === kmFim && segKmiMin!=null){
+              kmIniEfetivo = Math.min(kmIniEfetivo, segKmiMin);
+              kmFimEfetivo = Math.max(kmFimEfetivo, segKmfMax);
+            }
             return true; // achou cobertura nessa fonte, não tenta a próxima
           }
           return false;
         });
 
         trechoRows.push({
-          seq, kmIni, kmFim, label: fmtKmBR(kmIni)+'–'+fmtKmBR(kmFim),
+          seq, kmIni: kmIniEfetivo, kmFim: kmFimEfetivo, label: fmtKmBR(kmIniEfetivo)+'–'+fmtKmBR(kmFimEfetivo),
           ASV, ACV, ACO, Sinistros, UPS, animal, ped, naoIdentVitima, vit,
           VMDa_c, VMDa_d, rodoviaUfCorrigidaLabel, ufFaixaCorrigida
         });
