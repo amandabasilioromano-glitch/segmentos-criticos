@@ -395,6 +395,7 @@
 
     <div style="margin-top:10px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
       <button type="button" class="btn" id="pastaPqBtn" style="background:#fff; color:var(--text-dark); border:1px solid var(--line); padding:9px 16px; font-size:12.5px;">📁 Escolher pasta com PQ_ACIDENTE</button>
+      <button type="button" class="btn" id="pastaPqAtualizarBtn" style="display:none; background:#fff; color:var(--text-dark); border:1px solid var(--line); padding:9px 16px; font-size:12.5px;" title="Relê a mesma pasta — pega edições feitas nos arquivos desde a última vez">🔄 Atualizar</button>
       <span id="pastaPqInfo" style="font-family:'JetBrains Mono',monospace; font-size:11.5px; color:var(--muted);"></span>
     </div>
     <div id="pastaPqLista" style="display:none; margin-top:10px; border:1px solid var(--line); border-radius:2px; max-height:260px; overflow-y:auto;"></div>
@@ -532,6 +533,7 @@
     <div class="btn-row">
       <button class="btn accent" id="downloadBtn">↓ Baixar Analise.xlsx</button>
       <button class="btn" id="sharepointBtn" style="background:#fff; color:var(--text-dark); border:1px solid var(--line);">💾 Salvar na pasta sincronizada</button>
+      <button class="btn" id="trocarPastaSalvarBtn" style="background:#fff; color:var(--text-dark); border:1px solid var(--line); font-size:12px;" title="Escolhe (ou troca) a pasta de destino agora, sem precisar salvar nada ainda">📁 Trocar pasta de salvar</button>
       <button class="btn" id="resetBtn" style="background:#fff; color:var(--text-dark); border:1px solid var(--line);">Processar outro conjunto de arquivos</button>
     </div>
     <p class="status" id="sharepointStatus" style="margin-top:8px;"></p>
@@ -640,12 +642,6 @@
   // que sempre fez); em vez disso, mantém o período escolhido, só empurrando a data início
   // pra frente se essa concessionária específica não tiver sinistro nenhum antes dela.
   let periodoDefinidoManualmente = false;
-  // A data início que a pessoa realmente escolheu, guardada à parte — o campo #dateStart
-  // pode ser empurrado pra frente temporariamente (concessionária sem dado antes dele), e
-  // sem essa âncora separada, comparar contra o valor ATUAL do campo faz o empurrão virar
-  // permanente: ao voltar pra uma concessionária que tem dado desde o início escolhido, ela
-  // ficaria presa na data empurrada da concessionária anterior em vez de voltar pra âncora.
-  let periodoManualAncoraInicio = null;
 
   // Acumula um resultado por concessionária processada — processar uma segunda (ou
   // terceira...) concessionária não substitui a anterior, fica disponível pra trocar de
@@ -966,10 +962,114 @@
   }
 
   const pastaPqBtn = document.getElementById('pastaPqBtn');
+  const pastaPqAtualizarBtn = document.getElementById('pastaPqAtualizarBtn');
   const pastaPqInfo = document.getElementById('pastaPqInfo');
   const pastaPqLista = document.getElementById('pastaPqLista');
   const pastaPqAviso = document.getElementById('pastaPqAviso');
   let forcarTrocaPastaLeitura = false;
+
+  async function renderizarListaPasta(dirHandle){
+    pastaPqInfo.textContent = 'Lendo pasta "'+dirHandle.name+'"…';
+    const arquivos = await listarXlsxNaPasta(dirHandle);
+    if(!arquivos.length){
+      pastaPqInfo.textContent = 'Nenhum .xlsx encontrado em "'+dirHandle.name+'".';
+      pastaPqLista.style.display = 'none';
+      pastaPqAtualizarBtn.style.display = 'none';
+      return;
+    }
+    pastaPqInfo.innerHTML = arquivos.length+' arquivo(s) em "'+dirHandle.name+'" — '+
+      '<button type="button" class="linkBtn" id="trocarPastaPqBtn">trocar pasta</button>';
+    document.getElementById('trocarPastaPqBtn').addEventListener('click', ()=>{ forcarTrocaPastaLeitura = true; pastaPqBtn.click(); });
+    pastaPqAtualizarBtn.style.display = 'inline-block';
+    pastaPqLista.style.display = 'block';
+    pastaPqLista.innerHTML =
+      '<div style="padding:8px 14px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:14px; background:#F6F3E9; position:sticky; top:0;">'+
+        '<button type="button" class="linkBtn" id="selecionarTodosPqBtn">selecionar todas</button>'+
+        '<button type="button" class="linkBtn" id="limparSelecaoPqBtn">limpar seleção</button>'+
+        '<button type="button" class="btn accent" id="processarSelecionadosPqBtn" style="margin-left:auto; padding:7px 14px; font-size:12px;" disabled>Processar selecionadas (0)</button>'+
+      '</div>'+
+      arquivos.map((a,i)=>
+        '<div class="pastaPqItem" data-i="'+i+'" style="display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--line); cursor:pointer; font-family:\'Inter\',sans-serif; font-size:13px;">'+
+          '<input type="checkbox" class="pastaPqCheck" data-i="'+i+'" style="flex:none;">'+
+          '<span style="flex:1;">'+a.name+'</span>'+
+        '</div>'
+      ).join('');
+
+    const contadorBtn = document.getElementById('processarSelecionadosPqBtn');
+    function atualizarContador(){
+      const n = pastaPqLista.querySelectorAll('.pastaPqCheck:checked').length;
+      contadorBtn.textContent = 'Processar selecionadas ('+n+')';
+      contadorBtn.disabled = n === 0;
+    }
+    document.getElementById('selecionarTodosPqBtn').addEventListener('click', ()=>{
+      pastaPqLista.querySelectorAll('.pastaPqCheck').forEach(c=> c.checked = true);
+      atualizarContador();
+    });
+    document.getElementById('limparSelecaoPqBtn').addEventListener('click', ()=>{
+      pastaPqLista.querySelectorAll('.pastaPqCheck').forEach(c=> c.checked = false);
+      atualizarContador();
+    });
+    contadorBtn.addEventListener('click', async ()=>{
+      const indices = Array.from(pastaPqLista.querySelectorAll('.pastaPqCheck:checked')).map(c=> Number(c.dataset.i));
+      if(!indices.length) return;
+      contadorBtn.disabled = true;
+      pastaPqBtn.disabled = true;
+      pastaPqAviso.style.display = 'none';
+      const naoReconhecidas = [];
+      // Processa uma de cada vez, em sequência (não em paralelo) — o processamento usa
+      // estado compartilhado internamente (slots, sinistros...), rodar duas ao mesmo
+      // tempo bagunçaria os resultados. Pode demorar com muitas planilhas, mas cada
+      // resultado já vai ficando disponível no seletor de concessionária conforme
+      // termina, não precisa esperar tudo acabar pra ver o primeiro.
+      for(let n=0; n<indices.length; n++){
+        const item = arquivos[indices[n]];
+        pastaPqInfo.textContent = 'Processando '+(n+1)+' de '+indices.length+': "'+item.name+'"…';
+        try{
+          const file = await item.handle.getFile();
+          // Se a concessionária dessa PQ_ACIDENTE não for reconhecida automaticamente
+          // (nome não bate com nenhuma do SNV embutido), o processamento fica esperando
+          // seleção manual e "selectedConcessionaria" continua vazio — é esse o sinal de
+          // falha, não o tamanho do acumulador (que não muda quando REPROCESSA uma
+          // concessionária que já tinha entrado antes nessa sessão — atualiza a entrada
+          // existente em vez de criar uma nova, e isso não é falha nenhuma).
+          await handleFiles([file]);
+          if(!selectedConcessionaria) naoReconhecidas.push(item.name);
+        }catch(err){
+          console.error('falha ao processar '+item.name+':', err);
+          naoReconhecidas.push(item.name+' (erro: '+err.message+')');
+        }
+      }
+      const okCount = indices.length - naoReconhecidas.length;
+      pastaPqInfo.innerHTML = 'Processadas '+okCount+' de '+indices.length+' planilha(s) de "'+dirHandle.name+'" — '+
+        '<button type="button" class="linkBtn" id="trocarPastaPqBtn">trocar pasta</button>';
+      document.getElementById('trocarPastaPqBtn').addEventListener('click', ()=>{ forcarTrocaPastaLeitura = true; pastaPqBtn.click(); });
+      if(naoReconhecidas.length){
+        pastaPqAviso.style.display = 'block';
+        pastaPqAviso.innerHTML = '⚠ '+naoReconhecidas.length+' planilha(s) NÃO processada(s) — a concessionária não foi reconhecida automaticamente '+
+          '(precisa selecionar manualmente qual é, um arquivo por vez, fora do lote):<br>'+
+          naoReconhecidas.map(n=> '· '+n).join('<br>');
+      }
+      pastaPqBtn.disabled = false;
+    });
+
+    pastaPqLista.querySelectorAll('.pastaPqCheck').forEach(chk=>{
+      chk.addEventListener('click', e=> e.stopPropagation()); // não dispara o carregamento individual da linha
+      chk.addEventListener('change', atualizarContador);
+    });
+    pastaPqLista.querySelectorAll('.pastaPqItem').forEach(el=>{
+      el.addEventListener('mouseenter', ()=> el.style.background='#F6F3E9');
+      el.addEventListener('mouseleave', ()=> el.style.background='');
+      el.addEventListener('click', async ()=>{
+        const item = arquivos[Number(el.dataset.i)];
+        pastaPqInfo.textContent = 'Carregando "'+item.name+'"…';
+        const file = await item.handle.getFile();
+        await handleFiles([file]);
+        pastaPqInfo.innerHTML = arquivos.length+' arquivo(s) em "'+dirHandle.name+'" — '+
+          '<button type="button" class="linkBtn" id="trocarPastaPqBtn">trocar pasta</button>';
+        document.getElementById('trocarPastaPqBtn').addEventListener('click', ()=>{ forcarTrocaPastaLeitura = true; pastaPqBtn.click(); });
+      });
+    });
+  }
 
   pastaPqBtn.addEventListener('click', async ()=>{
     pastaPqBtn.disabled = true;
@@ -981,109 +1081,29 @@
       // "dentro" do clique da pessoa.
       const dirHandle = await obterPastaLeituraHandle(forcarTrocaPastaLeitura);
       forcarTrocaPastaLeitura = false;
-      pastaPqInfo.textContent = 'Lendo pasta "'+dirHandle.name+'"…';
-      const arquivos = await listarXlsxNaPasta(dirHandle);
-      if(!arquivos.length){
-        pastaPqInfo.textContent = 'Nenhum .xlsx encontrado em "'+dirHandle.name+'".';
-        pastaPqLista.style.display = 'none';
-        return;
-      }
-      pastaPqInfo.innerHTML = arquivos.length+' arquivo(s) em "'+dirHandle.name+'" — '+
-        '<button type="button" class="linkBtn" id="trocarPastaPqBtn">trocar pasta</button>';
-      document.getElementById('trocarPastaPqBtn').addEventListener('click', ()=>{ forcarTrocaPastaLeitura = true; pastaPqBtn.click(); });
-      pastaPqLista.style.display = 'block';
-      pastaPqLista.innerHTML =
-        '<div style="padding:8px 14px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:14px; background:#F6F3E9; position:sticky; top:0;">'+
-          '<button type="button" class="linkBtn" id="selecionarTodosPqBtn">selecionar todas</button>'+
-          '<button type="button" class="linkBtn" id="limparSelecaoPqBtn">limpar seleção</button>'+
-          '<button type="button" class="btn accent" id="processarSelecionadosPqBtn" style="margin-left:auto; padding:7px 14px; font-size:12px;" disabled>Processar selecionadas (0)</button>'+
-        '</div>'+
-        arquivos.map((a,i)=>
-          '<div class="pastaPqItem" data-i="'+i+'" style="display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--line); cursor:pointer; font-family:\'Inter\',sans-serif; font-size:13px;">'+
-            '<input type="checkbox" class="pastaPqCheck" data-i="'+i+'" style="flex:none;">'+
-            '<span style="flex:1;">'+a.name+'</span>'+
-          '</div>'
-        ).join('');
-
-      const contadorBtn = document.getElementById('processarSelecionadosPqBtn');
-      function atualizarContador(){
-        const n = pastaPqLista.querySelectorAll('.pastaPqCheck:checked').length;
-        contadorBtn.textContent = 'Processar selecionadas ('+n+')';
-        contadorBtn.disabled = n === 0;
-      }
-      document.getElementById('selecionarTodosPqBtn').addEventListener('click', ()=>{
-        pastaPqLista.querySelectorAll('.pastaPqCheck').forEach(c=> c.checked = true);
-        atualizarContador();
-      });
-      document.getElementById('limparSelecaoPqBtn').addEventListener('click', ()=>{
-        pastaPqLista.querySelectorAll('.pastaPqCheck').forEach(c=> c.checked = false);
-        atualizarContador();
-      });
-      contadorBtn.addEventListener('click', async ()=>{
-        const indices = Array.from(pastaPqLista.querySelectorAll('.pastaPqCheck:checked')).map(c=> Number(c.dataset.i));
-        if(!indices.length) return;
-        contadorBtn.disabled = true;
-        pastaPqBtn.disabled = true;
-        pastaPqAviso.style.display = 'none';
-        const naoReconhecidas = [];
-        // Processa uma de cada vez, em sequência (não em paralelo) — o processamento usa
-        // estado compartilhado internamente (slots, sinistros...), rodar duas ao mesmo
-        // tempo bagunçaria os resultados. Pode demorar com muitas planilhas, mas cada
-        // resultado já vai ficando disponível no seletor de concessionária conforme
-        // termina, não precisa esperar tudo acabar pra ver o primeiro.
-        for(let n=0; n<indices.length; n++){
-          const item = arquivos[indices[n]];
-          pastaPqInfo.textContent = 'Processando '+(n+1)+' de '+indices.length+': "'+item.name+'"…';
-          try{
-            const file = await item.handle.getFile();
-            // Se a concessionária dessa PQ_ACIDENTE não for reconhecida automaticamente
-            // (nome não bate com nenhuma do SNV embutido), o processamento fica esperando
-            // seleção manual e "selectedConcessionaria" continua vazio — é esse o sinal de
-            // falha, não o tamanho do acumulador (que não muda quando REPROCESSA uma
-            // concessionária que já tinha entrado antes nessa sessão — atualiza a entrada
-            // existente em vez de criar uma nova, e isso não é falha nenhuma).
-            await handleFiles([file]);
-            if(!selectedConcessionaria) naoReconhecidas.push(item.name);
-          }catch(err){
-            console.error('falha ao processar '+item.name+':', err);
-            naoReconhecidas.push(item.name+' (erro: '+err.message+')');
-          }
-        }
-        const okCount = indices.length - naoReconhecidas.length;
-        pastaPqInfo.innerHTML = 'Processadas '+okCount+' de '+indices.length+' planilha(s) de "'+dirHandle.name+'" — '+
-          '<button type="button" class="linkBtn" id="trocarPastaPqBtn">trocar pasta</button>';
-        document.getElementById('trocarPastaPqBtn').addEventListener('click', ()=>{ forcarTrocaPastaLeitura = true; pastaPqBtn.click(); });
-        if(naoReconhecidas.length){
-          pastaPqAviso.style.display = 'block';
-          pastaPqAviso.innerHTML = '⚠ '+naoReconhecidas.length+' planilha(s) NÃO processada(s) — a concessionária não foi reconhecida automaticamente '+
-            '(precisa selecionar manualmente qual é, um arquivo por vez, fora do lote):<br>'+
-            naoReconhecidas.map(n=> '· '+n).join('<br>');
-        }
-        pastaPqBtn.disabled = false;
-      });
-
-      pastaPqLista.querySelectorAll('.pastaPqCheck').forEach(chk=>{
-        chk.addEventListener('click', e=> e.stopPropagation()); // não dispara o carregamento individual da linha
-        chk.addEventListener('change', atualizarContador);
-      });
-      pastaPqLista.querySelectorAll('.pastaPqItem').forEach(el=>{
-        el.addEventListener('mouseenter', ()=> el.style.background='#F6F3E9');
-        el.addEventListener('mouseleave', ()=> el.style.background='');
-        el.addEventListener('click', async ()=>{
-          const item = arquivos[Number(el.dataset.i)];
-          pastaPqInfo.textContent = 'Carregando "'+item.name+'"…';
-          const file = await item.handle.getFile();
-          await handleFiles([file]);
-          pastaPqInfo.innerHTML = arquivos.length+' arquivo(s) em "'+dirHandle.name+'" — '+
-            '<button type="button" class="linkBtn" id="trocarPastaPqBtn">trocar pasta</button>';
-          document.getElementById('trocarPastaPqBtn').addEventListener('click', ()=>{ forcarTrocaPastaLeitura = true; pastaPqBtn.click(); });
-        });
-      });
+      await renderizarListaPasta(dirHandle);
     }catch(err){
       console.error(err);
       if(err.name !== 'AbortError') pastaPqInfo.textContent = 'Não consegui abrir a pasta: '+err.message;
     }finally{
       pastaPqBtn.disabled = false;
+    }
+  });
+
+  // "Atualizar" relê a MESMA pasta já escolhida (sem pedir escolher de novo) — pega
+  // handles novos de cada arquivo, então reflete edições feitas nele desde a última vez
+  // (ex.: corrigiu algo na PQ_ACIDENTE no Excel e salvou, sem trocar de pasta nem nome).
+  pastaPqAtualizarBtn.addEventListener('click', async ()=>{
+    pastaPqAtualizarBtn.disabled = true;
+    pastaPqAviso.style.display = 'none';
+    try{
+      const dirHandle = await obterPastaLeituraHandle(false);
+      await renderizarListaPasta(dirHandle);
+    }catch(err){
+      console.error(err);
+      pastaPqInfo.textContent = 'Não consegui atualizar a pasta: '+err.message;
+    }finally{
+      pastaPqAtualizarBtn.disabled = false;
     }
   });
 
@@ -1383,30 +1403,15 @@
   // Decide o que fazer com Data início/fim quando uma concessionária entra em foco — seja
   // carregando uma PQ_ACIDENTE nova, seja trocando de visualização no seletor da etapa 04.
   // Sem período manual definido ainda, usa o range natural dessa concessionária (bom
-  // padrão pra primeira vez). Com período JÁ definido manualmente, o período é "grudento"
-  // — continua o mesmo mesmo trocando de concessionária — só empurra a data início pra
-  // frente se ESSA concessionária não tiver sinistro nenhum antes dela (senão o filtro
-  // fica "vazio" à toa, sem avisar). Nunca restaura a data que foi usada da ÚLTIMA vez que
-  // essa concessionária específica foi processada — isso reintroduziria o problema de
-  // "trocar de concessionária volta pra data antiga", que é o oposto do período grudento.
+  // padrão pra primeira vez, sem precisar digitar nada). Depois que a pessoa mexeu na data
+  // uma vez (digitou ou clicou "Aplicar período"), o período fica travado exatamente como
+  // ela deixou — nunca mais muda sozinho, nem carregando outra concessionária, nem
+  // "empurrando" pra frente automaticamente. Se uma concessionária não tiver sinistro
+  // nesse período, o resultado mostra 0 sinistros pra ela — visível e sem mágica escondida.
   function aplicarPeriodoConsiderandoSticky(range){
-    const dataStartEl = document.getElementById('dateStart');
-    const dataEndEl = document.getElementById('dateEnd');
-    if(!periodoDefinidoManualmente){
-      dataStartEl.value = toDateInputValue(range.min);
-      dataEndEl.value = toDateInputValue(range.max);
-    } else if(range.min){
-      // Compara contra a ÂNCORA (a data que a pessoa escolheu de verdade), não contra o
-      // valor ATUAL do campo — que pode já estar empurrado pra frente por causa de outra
-      // concessionária sem dado tão cedo. Sem isso, o empurrão vira permanente: voltar pra
-      // uma concessionária que TEM dado desde a âncora ficaria preso na data empurrada da
-      // concessionária anterior, em vez de voltar pra âncora original.
-      if(!periodoManualAncoraInicio || range.min > periodoManualAncoraInicio){
-        dataStartEl.value = toDateInputValue(range.min);
-      } else {
-        dataStartEl.value = toDateInputValue(periodoManualAncoraInicio);
-      }
-    }
+    if(periodoDefinidoManualmente) return; // já foi mexido — não toca mais em nada
+    document.getElementById('dateStart').value = toDateInputValue(range.min);
+    document.getElementById('dateEnd').value = toDateInputValue(range.max);
   }
 
   concessionariaSelect.addEventListener('change', ()=>{
@@ -1446,7 +1451,6 @@
     if(backgroundLayer) backgroundLayer.clearLayers();
     selectedConcessionaria = '';
     periodoDefinidoManualmente = false;
-    periodoManualAncoraInicio = null;
     document.getElementById('dateStart').value = '';
     document.getElementById('dateEnd').value = '';
     renderChecklist();
@@ -1457,10 +1461,20 @@
     setStep(1);
   });
 
+  // Marca o período como definido manualmente E já reprocessa na hora — antes só marcava a
+  // flag sem reprocessar, então digitar uma data sozinha "não fazia nada visível" até
+  // clicar em "Aplicar período" à parte, o que confundia mais do que ajudava. Agora mudar a
+  // data se comporta igual qualquer outro filtro da ferramenta (ex.: clicar num preset de
+  // k): aplica na hora, sem passo extra.
+  function marcarPeriodoManualEReprocessar(){
+    periodoDefinidoManualmente = true;
+    if(slots.pq.best) runProcessing();
+  }
+  document.getElementById('dateStart').addEventListener('change', marcarPeriodoManualEReprocessar);
+  document.getElementById('dateEnd').addEventListener('change', marcarPeriodoManualEReprocessar);
+
   document.getElementById('applyDatesBtn').addEventListener('click', ()=>{
     periodoDefinidoManualmente = true;
-    const v = document.getElementById('dateStart').value;
-    periodoManualAncoraInicio = v ? new Date(v+'T00:00:00Z') : null;
     if(!slots.pq.best){
       setStatus('Carregue a planilha PQ_ACIDENTE primeiro para aplicar o período.', true);
       return;
@@ -3853,6 +3867,31 @@
   const sharepointBtn = document.getElementById('sharepointBtn');
   const sharepointStatus = document.getElementById('sharepointStatus');
   let forcarTrocaDePasta = false;
+  const trocarPastaSalvarBtn = document.getElementById('trocarPastaSalvarBtn');
+  trocarPastaSalvarBtn.addEventListener('click', async ()=>{
+    trocarPastaSalvarBtn.disabled = true;
+    sharepointStatus.classList.remove('err');
+    sharepointStatus.textContent = 'Escolha a pasta de destino…';
+    try{
+      // Sempre força a troca aqui — é literalmente o botão "trocar pasta", clicar nele já
+      // significa "quero escolher outra agora", mesmo que ainda não tenha salvo nada com a
+      // pasta atual.
+      const dirHandle = await obterPastaHandle(true);
+      forcarTrocaDePasta = false; // já trocou — próximo "Salvar" usa essa, sem perguntar de novo
+      sharepointStatus.textContent = '✓ Pasta de destino: "'+dirHandle.name+'". Clique em "Salvar na pasta sincronizada" quando quiser gravar o arquivo ali.';
+    }catch(err){
+      console.error(err);
+      sharepointStatus.classList.add('err');
+      if(err.name === 'AbortError'){
+        sharepointStatus.textContent = 'Cancelado — nenhuma pasta foi escolhida.';
+      } else {
+        sharepointStatus.textContent = 'Não consegui escolher a pasta: '+err.message;
+      }
+    }finally{
+      trocarPastaSalvarBtn.disabled = false;
+    }
+  });
+
   sharepointBtn.addEventListener('click', async ()=>{
     if(!outWorkbook) return;
     sharepointBtn.disabled = true;
