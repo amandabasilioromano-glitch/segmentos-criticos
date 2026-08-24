@@ -635,6 +635,11 @@
   // dessa concessionária inteiramente, em vez de entrar usando o VMDA da concessionária
   // atual responsável por ele.
   let considerarTrechoAtual = false;
+  // Fica true assim que a pessoa aplica um período manualmente — a partir daí, carregar
+  // uma PQ_ACIDENTE nova NÃO reseta mais as datas pro range natural do arquivo (do jeito
+  // que sempre fez); em vez disso, mantém o período escolhido, só empurrando a data início
+  // pra frente se essa concessionária específica não tiver sinistro nenhum antes dela.
+  let periodoDefinidoManualmente = false;
 
   // Acumula um resultado por concessionária processada — processar uma segunda (ou
   // terceira...) concessionária não substitui a anterior, fica disponível pra trocar de
@@ -658,10 +663,13 @@
     if(!r) return;
     outWorkbook = r.outWorkbook;
     outFileName = r.outFileName;
-    selectedConcessionaria = nome;
+    // NÃO mexe em selectedConcessionaria aqui — essa variável representa a concessionária
+    // ativamente carregada na etapa 01 (a que "Aplicar período", trocar o k, etc. vão
+    // reprocessar). Trocar só a VISUALIZAÇÃO de um resultado já pronto no seletor não pode
+    // "vazar" e virar a concessionária usada num reprocessamento futuro sem querer.
     renderStats(r.stats);
     renderMap(r.mapPoints, r.mapaExcluidosPorAlerta);
-    renderTrechosConcedidosLayer();
+    renderTrechosConcedidosLayer(nome);
     resultPanel.style.display = 'block';
     sharepointStatus.textContent = '';
   }
@@ -1391,6 +1399,7 @@
     trechosConcedidosRenderizadosPara = null;
     if(backgroundLayer) backgroundLayer.clearLayers();
     selectedConcessionaria = '';
+    periodoDefinidoManualmente = false;
     document.getElementById('dateStart').value = '';
     document.getElementById('dateEnd').value = '';
     renderChecklist();
@@ -1402,6 +1411,7 @@
   });
 
   document.getElementById('applyDatesBtn').addEventListener('click', ()=>{
+    periodoDefinidoManualmente = true;
     if(!slots.pq.best){
       setStatus('Carregue a planilha PQ_ACIDENTE primeiro para aplicar o período.', true);
       return;
@@ -2380,8 +2390,20 @@
           slots.pq.concessionariaRaw = extractPqConcessionaria(c.best);
           selectedConcessionaria = ''; // nova PQ_ACIDENTE = nova tentativa de detecção, não herda a seleção anterior
           const range = extractPqDateRange(c.best);
-          document.getElementById('dateStart').value = toDateInputValue(range.min);
-          document.getElementById('dateEnd').value = toDateInputValue(range.max);
+          const dataStartEl = document.getElementById('dateStart');
+          const dataEndEl = document.getElementById('dateEnd');
+          if(!periodoDefinidoManualmente){
+            dataStartEl.value = toDateInputValue(range.min);
+            dataEndEl.value = toDateInputValue(range.max);
+          } else if(range.min){
+            // Período já foi escolhido manualmente antes (ex.: processando várias
+            // concessionárias em sequência, cada uma com período próprio de interesse) —
+            // mantém a data como está, só empurra o início pra frente se ESSA
+            // concessionária não tiver sinistro nenhum antes da data que estava lá (senão
+            // o filtro fica "vazio" pra ela à toa, sem avisar).
+            const atual = dataStartEl.value ? new Date(dataStartEl.value+'T00:00:00Z') : null;
+            if(!atual || range.min > atual) dataStartEl.value = toDateInputValue(range.min);
+          }
         } else if(c.type === 'snv'){
           slots.snv.file = file.name;
           slots.snv.data = buildSnvData(c.best);
@@ -3750,6 +3772,13 @@
           <div class="stat asv"><div class="n">${fmtPct(r.pctNaoCritico)}</div><div class="l">Não crítica (% km)</div></div>
           <div class="stat"><div class="n">${fmtPct(r.pctNaoClassificado)}</div><div class="l">Não classif. (% km)</div></div>
         </div>
+        ${r.nNaoClassificado > 0 ? `
+        <p style="font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); margin:6px 0 0;">
+          ⚠ ${r.nNaoClassificado} Segmento(s) Homogêneo(s) sem classificação (${r.sinistrosNaoClassificado} sinistro(s))
+          — a % acima é ponderada por km, então pode aparecer como 0,0% mesmo tendo sinistro
+          se esses trechos tiverem extensão pequena ou zero (ex.: sinistro isolado sem VMDa
+          por perto pra dar um tamanho real ao trecho).
+        </p>` : ''}
         <p class="grupo-label">Pessoas envolvidas</p>
         <div class="stats stats-grupo">
           <div class="stat"><div class="n">${pessoasTotal.toLocaleString('pt-BR')}</div><div class="l">Pessoas envolvidas</div></div>
@@ -3844,16 +3873,17 @@
   // sinistro) — mostra o desenho real da rodovia por baixo dos pontos de sinistro.
   let trechosConcedidosSegments = []; // [{rodovia,uf,tipo,kmi,kmf,layer}] — guardado pra poder filtrar a linha de fundo
 
-  function renderTrechosConcedidosLayer(){
-    if(!slots.mapa.best || !selectedConcessionaria) return;
-    if(trechosConcedidosRenderizadosPara === selectedConcessionaria) return; // já está desenhada
+  function renderTrechosConcedidosLayer(concessionariaAlvo){
+    const concess = concessionariaAlvo || selectedConcessionaria;
+    if(!slots.mapa.best || !concess) return;
+    if(trechosConcedidosRenderizadosPara === concess) return; // já está desenhada
     initLeafletMap();
     backgroundLayer.clearLayers();
     trechosConcedidosSegments = [];
     setStatus(document.getElementById('status').textContent + ' Desenhando trechos concedidos no mapa…');
     setTimeout(()=>{
       try{
-        const polylines = buildMapaConcedidosPolylines(slots.mapa.best, selectedConcessionaria, slots.snv.data);
+        const polylines = buildMapaConcedidosPolylines(slots.mapa.best, concess, slots.snv.data);
         polylines.forEach(seg=>{
           if(seg.points.length < 2) return;
           const layer = L.polyline(seg.points, {
@@ -3864,7 +3894,7 @@
           }).addTo(backgroundLayer);
           trechosConcedidosSegments.push({rodovia:seg.rodovia, uf:seg.uf, tipo:seg.tipo, kmi:seg.kmi, kmf:seg.kmf, layer});
         });
-        trechosConcedidosRenderizadosPara = selectedConcessionaria;
+        trechosConcedidosRenderizadosPara = concess;
         applyMapFilters(false); // aplica os filtros já ativos (se houver) na linha recém-desenhada
       }catch(err){
         console.error(err);
