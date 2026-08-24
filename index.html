@@ -2610,7 +2610,13 @@
       // fazendo o km total não diminuir nada mesmo com o toggle marcado.
       const extrasHistoricos = considerarTrechoAtual ? [] : getSnvTransferenciaHistorica(slots.snv.data, selectedConcessionaria);
       if(extrasHistoricos.length){
-        snvTrechosConcessionaria = snvTrechosConcessionaria.concat(groupSnvRowsIntoTrechos(extrasHistoricos));
+        // Marca esses trechos como "emprestados" (não são território de verdade da
+        // concessionária selecionada, só entram pra achar VMDa/SNV de sinistros que caem
+        // ali) — usado mais abaixo pra não dar cobertura completa sem sinistro nenhum pra
+        // eles (diferente dos trechos PRÓPRIOS da concessionária, que sempre mostram a
+        // extensão inteira concedida, com ou sem sinistro).
+        const trechosEmprestados = groupSnvRowsIntoTrechos(extrasHistoricos).map(t=> Object.assign({}, t, {emprestadoHistorico:true}));
+        snvTrechosConcessionaria = snvTrechosConcessionaria.concat(trechosEmprestados);
       }
     }
 
@@ -3332,14 +3338,19 @@
         // nada que explique de onde veio). Esses só entram via
         // detectarTrechosAccidentOnly, ou seja, só quando têm sinistro de verdade.
         if(!isTipoPrincipal(t.tipo)) return;
-        // Mesmo sendo Eixo Principal/Estadual, só preenche os pedaços SEM sinistro de uma
-        // rodovia que TEM sinistro em ALGUM lugar dela (completa os buracos no meio de um
-        // corredor ativo). Uma BR+UF+Tipo inteira sem NENHUM sinistro em lugar nenhum (ex.:
-        // rodovia coincidente/adjacente que o SNV cataloga como concessão mas nunca teve
-        // acidente registrado) não entra — "sem sinistro nenhum" não é "trecho vazio no
-        // meio de uma rodovia ativa", é a rodovia inteira não ter atividade nenhuma.
-        const chaveBrUfTipo = (t.br||'') + '||' + t.uf + '||' + (t.tipo||'');
-        if(!accGroups.has(chaveBrUfTipo)) return;
+        // Mesmo sendo Eixo Principal/Estadual, só exige sinistro em ALGUM lugar da BR+UF+Tipo
+        // quando o trecho é EMPRESTADO de outra concessionária (histórico de transferência —
+        // ver getSnvTransferenciaHistorica). Trechos genuinamente PRÓPRIOS da concessionária
+        // selecionada sempre mostram a extensão completa concedida, com ou sem sinistro — é
+        // a rodovia de verdade dela, a % de criticidade tem que ser sobre a extensão toda,
+        // não só onde teve acidente. A exigência de sinistro é só pra evitar rodovia
+        // emprestada (coincidente/adjacente, tipo BR-354/364/452/464 da Triunfo Concebra,
+        // que vêm junto só pra achar VMDa de sinistro que caia lá) aparecer inteira mesmo
+        // sem nenhum sinistro de verdade da concessionária ali.
+        if(t.emprestadoHistorico){
+          const chaveBrUfTipo = (t.br||'') + '||' + t.uf + '||' + (t.tipo||'');
+          if(!accGroups.has(chaveBrUfTipo)) return;
+        }
         // temSinistro:false + seus grupoIds (se houver) pra, no filtro final, sumir se a BR
         // coincidente pareada com ela (mesmo grupoId, do Federal Coincidente) tem sinistro de
         // verdade — assim não fica um buraco no meio da rodovia principal E não repete o
