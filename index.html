@@ -658,33 +658,48 @@
     resultadoConcessSelect.innerHTML = nomes.map(n=> '<option value="'+String(n).replace(/"/g,'&quot;')+'">'+n+'</option>').join('');
     if(selecionar) resultadoConcessSelect.value = selecionar;
   }
-  resultadoConcessSelect.addEventListener('change', ()=> mostrarResultadoConcessionaria(resultadoConcessSelect.value));
+  resultadoConcessSelect.addEventListener('change', async ()=> await mostrarResultadoConcessionaria(resultadoConcessSelect.value));
 
-  function mostrarResultadoConcessionaria(nome){
+  // Só EXIBE um resultado já calculado (sem reprocessar nada) — usada no fim de um
+  // processamento bem-sucedido (runProcessing já reprocessou, só falta mostrar) e também
+  // por mostrarResultadoConcessionaria quando não precisa reprocessar.
+  function exibirResultadoConcessionaria(nome){
     const r = resultadosPorConcessionaria.get(nome);
     if(!r) return;
     outWorkbook = r.outWorkbook;
     outFileName = r.outFileName;
-    // Restaura o dado bruto + contexto dessa concessionária como "ativo" — troca de
-    // visualização volta a significar troca de contexto de verdade, mas agora sem o
-    // problema de antes (perder o dado bruto): guardamos ele junto no momento do
-    // processamento, então dá pra trazer de volta e reprocessar (ex.: "Aplicar período")
-    // sem precisar reenviar a planilha.
+    renderStats(r.stats);
+    renderMap(r.mapPoints, r.mapaExcluidosPorAlerta);
+    renderTrechosConcedidosLayer(nome);
+    resultPanel.style.display = 'block';
+    sharepointStatus.textContent = '';
+  }
+
+  // Chamada pelo seletor de concessionária da etapa 04 — troca o contexto ativo (dado
+  // bruto, concessionária) e, se o período já foi travado manualmente, REPROCESSA essa
+  // concessionária com o período atual dos campos (não só mostra o resultado velho,
+  // calculado com o período de quando ela foi processada da última vez — isso é o que
+  // causava "trocar de concessionária volta pra outra data"). runProcessing() já chama
+  // exibirResultadoConcessionaria sozinho no final, então não precisa chamar de novo aqui
+  // nesse caminho (evita recursão: essa função nunca chama a si mesma).
+  async function mostrarResultadoConcessionaria(nome){
+    const r = resultadosPorConcessionaria.get(nome);
+    if(!r) return;
     if(r.pqBest){
       slots.pq.best = r.pqBest;
       slots.pq.file = r.pqFile;
       slots.pq.concessionariaRaw = r.pqConcessionariaRaw;
     }
     selectedConcessionaria = nome;
-    if(r.pqBest) aplicarPeriodoConsiderandoSticky(extractPqDateRange(r.pqBest));
     if(r.kValue != null) document.getElementById('kValue').value = r.kValue;
     renderChecklist();
     updateConcessionariaUI();
-    renderStats(r.stats);
-    renderMap(r.mapPoints, r.mapaExcluidosPorAlerta);
-    renderTrechosConcedidosLayer(nome);
-    resultPanel.style.display = 'block';
-    sharepointStatus.textContent = '';
+    if(periodoDefinidoManualmente && r.pqBest){
+      await runProcessing();
+    } else {
+      if(r.pqBest) aplicarPeriodoConsiderandoSticky(extractPqDateRange(r.pqBest));
+      exibirResultadoConcessionaria(nome);
+    }
   }
 
   function setStep(n){
@@ -1339,14 +1354,58 @@
   // parte de outra" (sem br/km na entrada, ex.: Triunfo Concebra -> Way-262/Way-153) —
   // nesse caso, confia no SNV: se a concessionária ATUAL (paraAtual) tem cobertura de
   // verdade nesse br+uf+km, esse pedaço já não é mais da selecionada.
+  //
+  // Cache da lista filtrada (só os trechos das concessionárias atuais relevantes pra essa
+  // concessionária selecionada) — sem isso, cada chamada varria as 1300+ linhas do SNV
+  // inteiro, e essa função roda uma vez PRA CADA SINISTRO (milhares deles numa concessão
+  // grande) — quase 2 milhões de comparações numa concessão com 1500 sinistros, travando a
+  // aba por vários segundos. Filtrando uma vez só (list bem menor, só as poucas dezenas de
+  // linhas da Way-262/Way-153 etc.), a checagem por sinistro fica rápida de novo.
+  let cacheTransferidoFiltrado = null;
+  let cacheTransferidoConcessionaria = null;
+  let cacheTransferidoSnvRef = null;
+  function getTransferidoFiltrado(concessionariaSelecionada){
+    if(cacheTransferidoConcessionaria === concessionariaSelecionada && cacheTransferidoSnvRef === slots.snv.data && cacheTransferidoFiltrado) return cacheTransferidoFiltrado;
+    const entradasSemBr = HISTORICO_TRANSFERENCIA_TRECHOS.filter(h => !h.br && concessionariaEquivale(h.de, concessionariaSelecionada));
+    const paraAtuais = new Set(entradasSemBr.map(h=> normalizeConcessionaria(h.paraAtual)));
+    cacheTransferidoFiltrado = (paraAtuais.size && slots.snv.data)
+      ? slots.snv.data.filter(r=> paraAtuais.has(normalizeConcessionaria(r.concessionaria)))
+      : [];
+    cacheTransferidoConcessionaria = concessionariaSelecionada;
+    cacheTransferidoSnvRef = slots.snv.data;
+    return cacheTransferidoFiltrado;
+  }
+
+  // BR+UF que a concessionária selecionada AINDA tem cobertura própria no SNV (mesmo cache
+  // de concessionária+referência do SNV que getTransferidoFiltrado, calculado junto).
+  let cacheBrUfProprio = null;
+  function getBrUfsComCoberturaPropria(concessionariaSelecionada){
+    if(cacheTransferidoConcessionaria === concessionariaSelecionada && cacheTransferidoSnvRef === slots.snv.data && cacheBrUfProprio) return cacheBrUfProprio;
+    const set = new Set();
+    (slots.snv.data||[]).forEach(r=>{ if(concessionariaEquivale(r.concessionaria, concessionariaSelecionada)) set.add(r.br+'||'+r.uf); });
+    cacheBrUfProprio = set;
+    return set;
+  }
+
   function estaEmTrechoTransferido(br, uf, km, concessionariaSelecionada){
     if(typeof km !== 'number' || !Number.isFinite(km) || !br) return false;
     const brNum = normBR(br);
     return HISTORICO_TRANSFERENCIA_TRECHOS.some(h=>{
       if(!concessionariaEquivale(h.de, concessionariaSelecionada)) return false;
       if(h.br) return normBR(h.br)===brNum && h.uf===uf && km>=h.kmi && km<=h.kmf;
-      if(!slots.snv.data) return false;
-      return slots.snv.data.some(r=> concessionariaEquivale(r.concessionaria, h.paraAtual) && r.br===brNum && r.uf===uf && r.kmi<=km && r.kmf>=km);
+      // "Transferência da concessão toda" (sem br/km na própria entrada) — primeiro
+      // confere se a concessionária AINDA tem alguma linha própria dessa BR+UF no SNV. Se
+      // não tiver NENHUMA (foi tudo mesmo pra quem herdou, ex.: BR-262/MG e BR-153/MG da
+      // Concebra foram 100% pra Way-262/Way-153), considera QUALQUER km dessa BR+UF como
+      // transferido — não depende do km cair exatamente dentro da faixa catalogada de uma
+      // Way específica, porque pode haver um "buraco" pequeno no meio (entre onde o
+      // cadastro SNV de uma Way termina e o da outra começa) que não é território da
+      // concessionária original, só uma lacuna de catalogação.
+      if(!getBrUfsComCoberturaPropria(concessionariaSelecionada).has(brNum+'||'+uf)) return true;
+      // Ainda tem cobertura própria misturada com transferida nessa BR+UF — aí sim usa o
+      // km pra decidir qual pedaço é de quem.
+      const filtrado = getTransferidoFiltrado(concessionariaSelecionada);
+      return filtrado.some(r=> r.br===brNum && r.uf===uf && r.kmi<=km && r.kmf>=km);
     });
   }
 
@@ -1461,17 +1520,15 @@
     setStep(1);
   });
 
-  // Marca o período como definido manualmente E já reprocessa na hora — antes só marcava a
-  // flag sem reprocessar, então digitar uma data sozinha "não fazia nada visível" até
-  // clicar em "Aplicar período" à parte, o que confundia mais do que ajudava. Agora mudar a
-  // data se comporta igual qualquer outro filtro da ferramenta (ex.: clicar num preset de
-  // k): aplica na hora, sem passo extra.
-  function marcarPeriodoManualEReprocessar(){
+  // Marca o período como definido manualmente — só isso, sem reprocessar sozinho. Exige
+  // clicar em "Aplicar período" pra valer (por pedido explícito: reprocessar a cada tecla
+  // digitada ficava confuso, sem deixar claro quando o filtro realmente tinha sido
+  // aplicado).
+  function marcarPeriodoManual(){
     periodoDefinidoManualmente = true;
-    if(slots.pq.best) runProcessing();
   }
-  document.getElementById('dateStart').addEventListener('change', marcarPeriodoManualEReprocessar);
-  document.getElementById('dateEnd').addEventListener('change', marcarPeriodoManualEReprocessar);
+  document.getElementById('dateStart').addEventListener('change', marcarPeriodoManual);
+  document.getElementById('dateEnd').addEventListener('change', marcarPeriodoManual);
 
   document.getElementById('applyDatesBtn').addEventListener('click', ()=>{
     periodoDefinidoManualmente = true;
@@ -2053,6 +2110,15 @@
     porCodigo.forEach(grupo=>{
       grupo.pontos.sort((a,b)=> a.fid - b.fid);
       const kmInfo = kmPorCodigo.get(grupo.codigo);
+      // "Considerar só o trecho atual" também vale pra linha do mapa — sem isso, o
+      // desenho continuava mostrando o trecho inteiro emprestado da Way-262/Way-153 (a
+      // malha geométrica desse trecho ainda vem marcada com o nome da concessionária
+      // antiga no arquivo de Mapa), mesmo já tendo tirado ele do cálculo de km/VMDa.
+      if(considerarTrechoAtual && kmInfo){
+        const brNum = extractBR(grupo.rodovia);
+        const kmMeio = (kmInfo.kmi + kmInfo.kmf) / 2;
+        if(brNum && estaEmTrechoTransferido(brNum, grupo.uf, kmMeio, concessionariaSelecionada)) return;
+      }
       polylines.push({
         points: grupo.pontos.map(p=>[p.lat, p.lon]),
         rodovia: grupo.rodovia, uf: grupo.uf, tipo: grupo.tipo,
@@ -2527,7 +2593,7 @@
       // concessionária no passado (hoje sob outro nome no SNV/VMDA atual).
       const snvParaVmda = selectedConcessionaria
         ? slots.snv.data.filter(r => concessionariaEquivale(r.concessionaria, selectedConcessionaria))
-            .concat(getSnvTransferenciaHistorica(slots.snv.data, selectedConcessionaria))
+            .concat(considerarTrechoAtual ? [] : getSnvTransferenciaHistorica(slots.snv.data, selectedConcessionaria))
         : slots.snv.data;
       const vmdaDataFromAux = buildVmdaDataFromAux(slots.aux.vmdaRows);
       snvListWithVmda = computeSnvVmda(snvParaVmda, vmdaDataFromAux);
@@ -2537,7 +2603,12 @@
     let snvTrechosConcessionaria = null;
     if(slots.snv.data && selectedConcessionaria){
       snvTrechosConcessionaria = buildSnvTrechosForConcessionaria(slots.snv.data, selectedConcessionaria);
-      const extrasHistoricos = getSnvTransferenciaHistorica(slots.snv.data, selectedConcessionaria);
+      // "Considerar só o trecho atual" também vale aqui — sem isso, mesmo excluindo os
+      // SINISTROS que caem no trecho transferido (mais abaixo, em
+      // estaEmTrechoTransferido), a COBERTURA do SNV emprestada da concessionária atual
+      // (Way-262/Way-153 etc.) continuava entrando como extensão da concessão selecionada,
+      // fazendo o km total não diminuir nada mesmo com o toggle marcado.
+      const extrasHistoricos = considerarTrechoAtual ? [] : getSnvTransferenciaHistorica(slots.snv.data, selectedConcessionaria);
       if(extrasHistoricos.length){
         snvTrechosConcessionaria = snvTrechosConcessionaria.concat(groupSnvRowsIntoTrechos(extrasHistoricos));
       }
@@ -2579,7 +2650,7 @@
           kValue: document.getElementById('kValue').value
         });
         atualizarSeletorConcessionarias(nomeConcessResultado);
-        mostrarResultadoConcessionaria(nomeConcessResultado);
+        exibirResultadoConcessionaria(nomeConcessResultado);
         const periodoMsg = (dateStart || dateEnd)
           ? 'Período aplicado: '+(dateStart?fmtDateBR(dateStart):'início dos dados')+' a '+(dateEnd?fmtDateBR(dateEnd):'fim dos dados')+' — '
           : 'Sem filtro de período (todos os sinistros da planilha) — ';
@@ -3261,6 +3332,14 @@
         // nada que explique de onde veio). Esses só entram via
         // detectarTrechosAccidentOnly, ou seja, só quando têm sinistro de verdade.
         if(!isTipoPrincipal(t.tipo)) return;
+        // Mesmo sendo Eixo Principal/Estadual, só preenche os pedaços SEM sinistro de uma
+        // rodovia que TEM sinistro em ALGUM lugar dela (completa os buracos no meio de um
+        // corredor ativo). Uma BR+UF+Tipo inteira sem NENHUM sinistro em lugar nenhum (ex.:
+        // rodovia coincidente/adjacente que o SNV cataloga como concessão mas nunca teve
+        // acidente registrado) não entra — "sem sinistro nenhum" não é "trecho vazio no
+        // meio de uma rodovia ativa", é a rodovia inteira não ter atividade nenhuma.
+        const chaveBrUfTipo = (t.br||'') + '||' + t.uf + '||' + (t.tipo||'');
+        if(!accGroups.has(chaveBrUfTipo)) return;
         // temSinistro:false + seus grupoIds (se houver) pra, no filtro final, sumir se a BR
         // coincidente pareada com ela (mesmo grupoId, do Federal Coincidente) tem sinistro de
         // verdade — assim não fica um buraco no meio da rodovia principal E não repete o
