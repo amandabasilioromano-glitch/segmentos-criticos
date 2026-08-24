@@ -637,6 +637,12 @@
   // dessa concessionária inteiramente, em vez de entrar usando o VMDA da concessionária
   // atual responsável por ele.
   let considerarTrechoAtual = false;
+  // Guarda qual foi a última concessionária pra qual o toggle "trecho atual" já ficou
+  // aplicável (Concebra, Motiva RioSP...) — usado só pra saber quando é a PRIMEIRA vez que
+  // ela aparece na sessão (aí liga o toggle sozinho, por padrão) sem ficar reforçando isso
+  // toda vez que a mesma concessionária é reprocessada/revisualizada, o que sobrescreveria
+  // um desmarque manual da pessoa.
+  let ultimaConcessionariaComToggleAplicavel = null;
   // Fica true assim que a pessoa aplica um período manualmente — a partir daí, carregar
   // uma PQ_ACIDENTE nova NÃO reseta mais as datas pro range natural do arquivo (do jeito
   // que sempre fez); em vez disso, mantém o período escolhido, só empurrando a data início
@@ -1214,7 +1220,16 @@
     if(!aplicavel && considerarTrechoAtual){
       considerarTrechoAtual = false;
       considerarTrechoAtualChk.checked = false;
+    } else if(aplicavel && selectedConcessionaria !== ultimaConcessionariaComToggleAplicavel){
+      // Primeira vez que ESSA concessionária específica fica aplicável nesta sessão — vem
+      // marcado por padrão (é o comportamento que faz sentido na grande maioria dos casos
+      // pra Concebra/Motiva RioSP). Só liga automaticamente uma vez por concessionária —
+      // se a pessoa desmarcar manualmente depois, trocar de aba/reprocessar essa mesma
+      // concessionária não volta a marcar sozinho por cima da escolha dela.
+      considerarTrechoAtual = true;
+      considerarTrechoAtualChk.checked = true;
     }
+    ultimaConcessionariaComToggleAplicavel = aplicavel ? selectedConcessionaria : ultimaConcessionariaComToggleAplicavel;
   }
 
   function getConcessionariaOptions(){
@@ -1524,6 +1539,8 @@
     if(backgroundLayer) backgroundLayer.clearLayers();
     selectedConcessionaria = '';
     periodoDefinidoManualmente = false;
+    ultimaConcessionariaComToggleAplicavel = null;
+    considerarTrechoAtual = false;
     document.getElementById('dateStart').value = '';
     document.getElementById('dateEnd').value = '';
     renderChecklist();
