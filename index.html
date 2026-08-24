@@ -1346,11 +1346,19 @@
   // (coluna SNV preenchida) — usado pra excluir esses códigos da camada de reserva
   // genérica (ex.: os 27 nomes da Ecovias Ponte já cobrem quase todos os códigos "Acesso"
   // dela; só o código realmente sobrando, sem nome nenhum, deve cair na reserva).
+  // Um código só conta como "reivindicado" (excluído da camada genérica) quando o TIPO
+  // dessa linha na aba Trechos é um nome específico de verdade (ex.: "Acesso N 03 - RJ")
+  // — não quando é uma categoria genérica do SNV (ex.: "Contorno de Florianópolis - SC"
+  // mapeando pro tipo "Contorno", só ajudando o resolveBrTipo a classificar certo, sem
+  // criar uma entidade nomeada própria). Nesse segundo caso, o código do SNV continua
+  // fazendo parte normalmente da cobertura genérica desse tipo — excluí-lo sem necessidade
+  // fazia sinistros que resolviam pro mesmo tipo genérico não encontrarem mais o trecho
+  // certo pra casar, caindo no modo "só onde tem sinistro" e criando entradas duplicadas.
   function getCodigosSnvReivindicados(auxTrechosList, concessionariaSelecionada){
     const set = new Set();
     if(!auxTrechosList) return set;
     auxTrechosList.forEach(r=>{
-      if(r.snvCodigo && concessionariaEquivale(r.concessionaria, concessionariaSelecionada)) set.add(r.snvCodigo);
+      if(r.snvCodigo && !TIPOS_GENERICOS_SNV.has(r.tipo) && concessionariaEquivale(r.concessionaria, concessionariaSelecionada)) set.add(r.snvCodigo);
     });
     return set;
   }
