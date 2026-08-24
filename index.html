@@ -438,7 +438,6 @@
         </label>
       </div>
     </details>
-    <div id="visualizandoIndicador" style="display:none; margin-bottom:14px; padding:10px 14px; background:#F6F3E9; border:1px solid var(--line); border-radius:2px; font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--muted);"></div>
     <div id="concessionariaPanel" style="display:none; margin-bottom:16px;">
       <label style="font-size:12px; font-family:'JetBrains Mono',monospace; color:var(--muted); display:block; margin-bottom:6px;">
         Concessionária dos dados enviados
@@ -664,20 +663,22 @@
     if(!r) return;
     outWorkbook = r.outWorkbook;
     outFileName = r.outFileName;
-    // NÃO mexe em selectedConcessionaria aqui — essa variável representa a concessionária
-    // ativamente carregada na etapa 01 (a que "Aplicar período", trocar o k, etc. vão
-    // reprocessar). Trocar só a VISUALIZAÇÃO de um resultado já pronto no seletor não pode
-    // "vazar" e virar a concessionária usada num reprocessamento futuro sem querer — por
-    // isso esse indicador é só informativo, num elemento SEPARADO do painel de seleção da
-    // etapa 02 (que continua refletindo só o que está carregado de verdade).
-    const visualizandoIndicador = document.getElementById('visualizandoIndicador');
-    if(nome === selectedConcessionaria){
-      visualizandoIndicador.style.display = 'none';
-    } else {
-      visualizandoIndicador.style.display = 'block';
-      visualizandoIndicador.innerHTML = '👁 Visualizando o resultado de <strong>"'+nome+'"</strong>' +
-        (selectedConcessionaria ? ' — a planilha ativa aqui na etapa 01 continua sendo "'+selectedConcessionaria+'"; "Aplicar período" reprocessa essa, não a que está sendo visualizada.' : '.');
+    // Restaura o dado bruto + contexto dessa concessionária como "ativo" — troca de
+    // visualização volta a significar troca de contexto de verdade, mas agora sem o
+    // problema de antes (perder o dado bruto): guardamos ele junto no momento do
+    // processamento, então dá pra trazer de volta e reprocessar (ex.: "Aplicar período")
+    // sem precisar reenviar a planilha.
+    if(r.pqBest){
+      slots.pq.best = r.pqBest;
+      slots.pq.file = r.pqFile;
+      slots.pq.concessionariaRaw = r.pqConcessionariaRaw;
     }
+    selectedConcessionaria = nome;
+    if(r.dateStartValue != null) document.getElementById('dateStart').value = r.dateStartValue;
+    if(r.dateEndValue != null) document.getElementById('dateEnd').value = r.dateEndValue;
+    if(r.kValue != null) document.getElementById('kValue').value = r.kValue;
+    renderChecklist();
+    updateConcessionariaUI();
     renderStats(r.stats);
     renderMap(r.mapPoints, r.mapaExcluidosPorAlerta);
     renderTrechosConcedidosLayer(nome);
@@ -1411,7 +1412,6 @@
     if(backgroundLayer) backgroundLayer.clearLayers();
     selectedConcessionaria = '';
     periodoDefinidoManualmente = false;
-    document.getElementById('visualizandoIndicador').style.display = 'none';
     document.getElementById('dateStart').value = '';
     document.getElementById('dateEnd').value = '';
     renderChecklist();
@@ -2531,7 +2531,15 @@
         const nomeConcessResultado = selectedConcessionaria || nomeBase;
         resultadosPorConcessionaria.set(nomeConcessResultado, {
           outWorkbook, outFileName, stats: result.stats,
-          mapPoints: result.mapPoints, mapaExcluidosPorAlerta: result.stats.mapaExcluidosPorAlerta
+          mapPoints: result.mapPoints, mapaExcluidosPorAlerta: result.stats.mapaExcluidosPorAlerta,
+          // Dado bruto + contexto da etapa 01/02 no momento desse processamento — sem isso,
+          // reprocessar essa concessionária de novo (ex.: mudar o período depois de já ter
+          // processado outras) não tem como, porque o dado bruto da PQ_ACIDENTE dela já foi
+          // substituído pelo da última planilha carregada no lote.
+          pqBest: best, pqFile: slots.pq.file, pqConcessionariaRaw: slots.pq.concessionariaRaw,
+          dateStartValue: document.getElementById('dateStart').value,
+          dateEndValue: document.getElementById('dateEnd').value,
+          kValue: document.getElementById('kValue').value
         });
         atualizarSeletorConcessionarias(nomeConcessResultado);
         mostrarResultadoConcessionaria(nomeConcessResultado);
