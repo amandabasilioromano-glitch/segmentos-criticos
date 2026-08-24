@@ -640,6 +640,12 @@
   // que sempre fez); em vez disso, mantém o período escolhido, só empurrando a data início
   // pra frente se essa concessionária específica não tiver sinistro nenhum antes dela.
   let periodoDefinidoManualmente = false;
+  // A data início que a pessoa realmente escolheu, guardada à parte — o campo #dateStart
+  // pode ser empurrado pra frente temporariamente (concessionária sem dado antes dele), e
+  // sem essa âncora separada, comparar contra o valor ATUAL do campo faz o empurrão virar
+  // permanente: ao voltar pra uma concessionária que tem dado desde o início escolhido, ela
+  // ficaria presa na data empurrada da concessionária anterior em vez de voltar pra âncora.
+  let periodoManualAncoraInicio = null;
 
   // Acumula um resultado por concessionária processada — processar uma segunda (ou
   // terceira...) concessionária não substitui a anterior, fica disponível pra trocar de
@@ -674,8 +680,7 @@
       slots.pq.concessionariaRaw = r.pqConcessionariaRaw;
     }
     selectedConcessionaria = nome;
-    if(r.dateStartValue != null) document.getElementById('dateStart').value = r.dateStartValue;
-    if(r.dateEndValue != null) document.getElementById('dateEnd').value = r.dateEndValue;
+    if(r.pqBest) aplicarPeriodoConsiderandoSticky(extractPqDateRange(r.pqBest));
     if(r.kValue != null) document.getElementById('kValue').value = r.kValue;
     renderChecklist();
     updateConcessionariaUI();
@@ -1375,6 +1380,35 @@
     return d.getUTCFullYear()+'-'+pad(d.getUTCMonth()+1)+'-'+pad(d.getUTCDate());
   }
 
+  // Decide o que fazer com Data início/fim quando uma concessionária entra em foco — seja
+  // carregando uma PQ_ACIDENTE nova, seja trocando de visualização no seletor da etapa 04.
+  // Sem período manual definido ainda, usa o range natural dessa concessionária (bom
+  // padrão pra primeira vez). Com período JÁ definido manualmente, o período é "grudento"
+  // — continua o mesmo mesmo trocando de concessionária — só empurra a data início pra
+  // frente se ESSA concessionária não tiver sinistro nenhum antes dela (senão o filtro
+  // fica "vazio" à toa, sem avisar). Nunca restaura a data que foi usada da ÚLTIMA vez que
+  // essa concessionária específica foi processada — isso reintroduziria o problema de
+  // "trocar de concessionária volta pra data antiga", que é o oposto do período grudento.
+  function aplicarPeriodoConsiderandoSticky(range){
+    const dataStartEl = document.getElementById('dateStart');
+    const dataEndEl = document.getElementById('dateEnd');
+    if(!periodoDefinidoManualmente){
+      dataStartEl.value = toDateInputValue(range.min);
+      dataEndEl.value = toDateInputValue(range.max);
+    } else if(range.min){
+      // Compara contra a ÂNCORA (a data que a pessoa escolheu de verdade), não contra o
+      // valor ATUAL do campo — que pode já estar empurrado pra frente por causa de outra
+      // concessionária sem dado tão cedo. Sem isso, o empurrão vira permanente: voltar pra
+      // uma concessionária que TEM dado desde a âncora ficaria preso na data empurrada da
+      // concessionária anterior, em vez de voltar pra âncora original.
+      if(!periodoManualAncoraInicio || range.min > periodoManualAncoraInicio){
+        dataStartEl.value = toDateInputValue(range.min);
+      } else {
+        dataStartEl.value = toDateInputValue(periodoManualAncoraInicio);
+      }
+    }
+  }
+
   concessionariaSelect.addEventListener('change', ()=>{
     selectedConcessionaria = concessionariaSelect.value;
     updateConcessionariaUI();
@@ -1412,6 +1446,7 @@
     if(backgroundLayer) backgroundLayer.clearLayers();
     selectedConcessionaria = '';
     periodoDefinidoManualmente = false;
+    periodoManualAncoraInicio = null;
     document.getElementById('dateStart').value = '';
     document.getElementById('dateEnd').value = '';
     renderChecklist();
@@ -1424,6 +1459,8 @@
 
   document.getElementById('applyDatesBtn').addEventListener('click', ()=>{
     periodoDefinidoManualmente = true;
+    const v = document.getElementById('dateStart').value;
+    periodoManualAncoraInicio = v ? new Date(v+'T00:00:00Z') : null;
     if(!slots.pq.best){
       setStatus('Carregue a planilha PQ_ACIDENTE primeiro para aplicar o período.', true);
       return;
@@ -2401,21 +2438,7 @@
           slots.pq.best = c.best;
           slots.pq.concessionariaRaw = extractPqConcessionaria(c.best);
           selectedConcessionaria = ''; // nova PQ_ACIDENTE = nova tentativa de detecção, não herda a seleção anterior
-          const range = extractPqDateRange(c.best);
-          const dataStartEl = document.getElementById('dateStart');
-          const dataEndEl = document.getElementById('dateEnd');
-          if(!periodoDefinidoManualmente){
-            dataStartEl.value = toDateInputValue(range.min);
-            dataEndEl.value = toDateInputValue(range.max);
-          } else if(range.min){
-            // Período já foi escolhido manualmente antes (ex.: processando várias
-            // concessionárias em sequência, cada uma com período próprio de interesse) —
-            // mantém a data como está, só empurra o início pra frente se ESSA
-            // concessionária não tiver sinistro nenhum antes da data que estava lá (senão
-            // o filtro fica "vazio" pra ela à toa, sem avisar).
-            const atual = dataStartEl.value ? new Date(dataStartEl.value+'T00:00:00Z') : null;
-            if(!atual || range.min > atual) dataStartEl.value = toDateInputValue(range.min);
-          }
+          aplicarPeriodoConsiderandoSticky(extractPqDateRange(c.best));
         } else if(c.type === 'snv'){
           slots.snv.file = file.name;
           slots.snv.data = buildSnvData(c.best);
