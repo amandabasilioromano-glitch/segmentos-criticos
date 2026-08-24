@@ -438,6 +438,7 @@
         </label>
       </div>
     </details>
+    <div id="visualizandoIndicador" style="display:none; margin-bottom:14px; padding:10px 14px; background:#F6F3E9; border:1px solid var(--line); border-radius:2px; font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--muted);"></div>
     <div id="concessionariaPanel" style="display:none; margin-bottom:16px;">
       <label style="font-size:12px; font-family:'JetBrains Mono',monospace; color:var(--muted); display:block; margin-bottom:6px;">
         Concessionária dos dados enviados
@@ -666,7 +667,17 @@
     // NÃO mexe em selectedConcessionaria aqui — essa variável representa a concessionária
     // ativamente carregada na etapa 01 (a que "Aplicar período", trocar o k, etc. vão
     // reprocessar). Trocar só a VISUALIZAÇÃO de um resultado já pronto no seletor não pode
-    // "vazar" e virar a concessionária usada num reprocessamento futuro sem querer.
+    // "vazar" e virar a concessionária usada num reprocessamento futuro sem querer — por
+    // isso esse indicador é só informativo, num elemento SEPARADO do painel de seleção da
+    // etapa 02 (que continua refletindo só o que está carregado de verdade).
+    const visualizandoIndicador = document.getElementById('visualizandoIndicador');
+    if(nome === selectedConcessionaria){
+      visualizandoIndicador.style.display = 'none';
+    } else {
+      visualizandoIndicador.style.display = 'block';
+      visualizandoIndicador.innerHTML = '👁 Visualizando o resultado de <strong>"'+nome+'"</strong>' +
+        (selectedConcessionaria ? ' — a planilha ativa aqui na etapa 01 continua sendo "'+selectedConcessionaria+'"; "Aplicar período" reprocessa essa, não a que está sendo visualizada.' : '.');
+    }
     renderStats(r.stats);
     renderMap(r.mapPoints, r.mapaExcluidosPorAlerta);
     renderTrechosConcedidosLayer(nome);
@@ -1400,6 +1411,7 @@
     if(backgroundLayer) backgroundLayer.clearLayers();
     selectedConcessionaria = '';
     periodoDefinidoManualmente = false;
+    document.getElementById('visualizandoIndicador').style.display = 'none';
     document.getElementById('dateStart').value = '';
     document.getElementById('dateEnd').value = '';
     renderChecklist();
