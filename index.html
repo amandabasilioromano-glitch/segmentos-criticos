@@ -1909,6 +1909,20 @@
     }
 
     const nearest = findNearestTrechoPoint(trechosIndex, lat, lon);
+    // Caso específico e isolado: sinistro declarado "BR-060" com coordenada bem longe de
+    // qualquer malha de BR-060 (BR-060 não existe em MG) mas bem perto da malha da BR-153 —
+    // confirmado visualmente pelo usuário (região de Itumbiara, na divisa GO/MG, onde a
+    // BR-060/GO segue reto mas a coordenada real cai na BR-153/MG). Quem registrou errou a
+    // rodovia inteira, então o km declarado nunca bate com a numeração real da BR-153 ali
+    // (não tem como saber o km certo de uma rodovia que nem imaginava ser aquela) — o teste
+    // normal de "km faz sentido" (mais abaixo) nunca aprovaria essa correção. Por isso esse
+    // caso pontual ignora esse teste — mas só quando a rodovia declarada é especificamente
+    // BR-060 E a malha mais próxima de TODAS (sem filtro de UF, calculada acima) já indica
+    // BR-153 dentro do raio de confiança. Não muda o comportamento de nenhuma outra rodovia.
+    const brDeclaradaNum = extractBR(rodovia);
+    if(brDeclaradaNum === '060' && nearest && extractBR(nearest.rodovia) === '153' && nearest.distKm <= DIST_ALERTA_MAPA_KM){
+      return {alerta:'Coordenada fora da UF/rodovia informada (malha) — BR-060 não existe em MG, corrigido para BR-153', ufCorrigida: nearest.uf, brCorrigida: nearest.rodovia, tipoCorrigido: nearest.tipo};
+    }
     if(!nearest){
       // não achou ponto nenhum da malha nem depois de expandir a busca — bem longe de toda
       // a rede desta concessão. Isso é diferente de "achei outra rodovia/UF e troquei": aqui
