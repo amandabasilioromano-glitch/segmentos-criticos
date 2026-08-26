@@ -1898,6 +1898,27 @@
     if(!trechosIndex || typeof lat !== 'number' || typeof lon !== 'number') return null;
     if(lat === 0 && lon === 0) return {alerta:'Sem coordenada válida — Rodovia/UF mantidas como declaradas', ufCorrigida: uf, brCorrigida: '', tipoCorrigido: ''};
 
+    // Exceção específica da Triunfo Concebra: perto da fronteira GO/MG na BR-153 (onde a
+    // numeração de km REINICIA do zero ao entrar em MG — o último código em GO,
+    // 153BGO0770, termina em 696,7 km; o primeiro em MG, 153BMG0790, começa em 0 km), um
+    // sinistro com km PEQUENO ali só faz sentido como BR-153/MG — não pode ser BR-153/GO
+    // (que precisaria de km 696+ nesse ponto) nem nenhuma outra rodovia (não há outra BR
+    // catalogada bem ali). Corrige direto pelo raciocínio de km — mais confiável que buscar
+    // o ponto mais próximo na malha, que perto de cruzamentos pode confundir com outra
+    // rodovia que passa perto sem ser a rodovia física de verdade ali.
+    if(concessionariaEquivale(concessionariaSelecionada, 'Triunfo Concebra') && typeof km === 'number'){
+      const FRONTEIRA_153 = {lat:-18.41902, lon:-49.194548}; // 153BGO0770 (696,7 GO) / 153BMG0790 (0 MG)
+      const RAIO_FRONTEIRA_KM = 16; // margem mínima sobre o ponto mais distante confirmado (16793, a 15,86 km)
+      const KM_MAX_INICIO_MG = 35; // 153BMG0790+153BMG0800 cobrem 0-34,3 km — folga de ~1km
+      const distFronteira = Math.sqrt((lat-FRONTEIRA_153.lat)**2 + (lon-FRONTEIRA_153.lon)**2) * 111;
+      if(distFronteira <= RAIO_FRONTEIRA_KM && km <= KM_MAX_INICIO_MG){
+        const jaEhCerto = extractBR(rodovia) === '153' && String(uf).trim().toUpperCase() === 'MG';
+        if(!jaEhCerto){
+          return {alerta:'Coordenada fora da UF/rodovia informada — perto da fronteira GO/MG da Concebra, km compatível só com o início da BR-153/MG, corrigido', ufCorrigida:'MG', brCorrigida:'BR-153', tipoCorrigido:''};
+        }
+      }
+    }
+
     // Perto de divisa de estado, o ponto mais próximo entre TODAS as UFs pode cair do lado
     // errado da fronteira por questão de metros, mesmo a coordenada sendo genuinamente da UF
     // declarada (a malha da própria UF passa ali perto, só que por pouco não é a mais
@@ -1905,24 +1926,24 @@
     // raio de alerta — se achar, confia na UF declarada e nem compara com as outras UFs.
     const nearestMesmaUf = findNearestTrechoPoint(trechosIndex, lat, lon, uf);
     if(nearestMesmaUf && nearestMesmaUf.distKm <= DIST_ALERTA_MAPA_KM){
+      // Achou malha bem perto (própria ou herdada de transferência histórica, tanto faz até
+      // aqui) — mas se for da Concebra, confere se esse ponto é mesmo território PRÓPRIO
+      // hoje ou se só entrou no índice por causa do histórico de transferência (Way-262/
+      // Way-153). Um sinistro cuja coordenada bate só na parte histórica é fisicamente um
+      // trecho que já não é mais da Concebra — mesmo a Rodovia/UF declaradas parecendo
+      // plausíveis (ex.: "BR-153/GO km 529", que existe de verdade, só que bem mais adiante
+      // do que a Concebra ainda opera). Mantém tudo como declarado (não sabe qual é o valor
+      // certo, só que a coordenada não é mais dela) — só avisa.
+      if(concessionariaEquivale(concessionariaSelecionada, 'Triunfo Concebra')){
+        const nearestProprio = findNearestTrechoPoint(trechosIndex, lat, lon, uf, true);
+        if(!nearestProprio || nearestProprio.distKm > DIST_ALERTA_MAPA_KM){
+          return {alerta:'Coordenada muito distante da malha desta concessionária — Rodovia/UF mantidas como declaradas', ufCorrigida: uf, brCorrigida: '', tipoCorrigido: ''};
+        }
+      }
       return {alerta: '', ufCorrigida: uf, brCorrigida: '', tipoCorrigido: ''};
     }
 
     const nearest = findNearestTrechoPoint(trechosIndex, lat, lon);
-    // Caso específico e isolado: sinistro declarado "BR-060" com coordenada bem longe de
-    // qualquer malha de BR-060 (BR-060 não existe em MG) mas bem perto da malha da BR-153 —
-    // confirmado visualmente pelo usuário (região de Itumbiara, na divisa GO/MG, onde a
-    // BR-060/GO segue reto mas a coordenada real cai na BR-153/MG). Quem registrou errou a
-    // rodovia inteira, então o km declarado nunca bate com a numeração real da BR-153 ali
-    // (não tem como saber o km certo de uma rodovia que nem imaginava ser aquela) — o teste
-    // normal de "km faz sentido" (mais abaixo) nunca aprovaria essa correção. Por isso esse
-    // caso pontual ignora esse teste — mas só quando a rodovia declarada é especificamente
-    // BR-060 E a malha mais próxima de TODAS (sem filtro de UF, calculada acima) já indica
-    // BR-153 dentro do raio de confiança. Não muda o comportamento de nenhuma outra rodovia.
-    const brDeclaradaNum = extractBR(rodovia);
-    if(brDeclaradaNum === '060' && nearest && extractBR(nearest.rodovia) === '153' && nearest.distKm <= DIST_ALERTA_MAPA_KM){
-      return {alerta:'Coordenada fora da UF/rodovia informada (malha) — BR-060 não existe em MG, corrigido para BR-153', ufCorrigida: nearest.uf, brCorrigida: nearest.rodovia, tipoCorrigido: nearest.tipo};
-    }
     if(!nearest){
       // não achou ponto nenhum da malha nem depois de expandir a busca — bem longe de toda
       // a rede desta concessão. Isso é diferente de "achei outra rodovia/UF e troquei": aqui
@@ -1930,7 +1951,19 @@
       // mesmo — o texto do alerta precisa deixar isso claro, senão parece que algo foi
       // corrigido quando na verdade nada mudou (só ficou sinalizado que a coordenada é
       // suspeita).
-      return {alerta:'Coordenada muito distante da malha desta concessionária — Rodovia/UF mantidas como declaradas', ufCorrigida: reverseGeocodeUF(lat, lon) || uf, brCorrigida: '', tipoCorrigido: ''};
+      //
+      // Exceção da Triunfo Concebra: "BR-060" sem nenhum ponto de malha por perto é
+      // fisicamente MG (BR-060 não existe em MG — confirmado). O reverseGeocodeUF genérico
+      // não serve aqui porque os retângulos de GO e MG se sobrepõem muito nessa região
+      // fronteiriça, e GO sempre "ganha" por vir primeiro na lista de UFs — nunca chegaria a
+      // MG sozinho. Corrigir a UF pra MG (mesmo sem confirmar a rodovia) já basta pro filtro
+      // de "considerar trecho atual" excluir esses sinistros depois (a Concebra não tem
+      // NENHUMA cobertura própria de BR-060/MG — não existe mesmo — então
+      // estaEmTrechoTransferido já trata isso como transferido automaticamente).
+      const ufAjustada = (extractBR(rodovia) === '060' && concessionariaEquivale(concessionariaSelecionada, 'Triunfo Concebra'))
+        ? 'MG'
+        : (reverseGeocodeUF(lat, lon) || uf);
+      return {alerta:'Coordenada muito distante da malha desta concessionária — Rodovia/UF mantidas como declaradas', ufCorrigida: ufAjustada, brCorrigida: '', tipoCorrigido: ''};
     }
     const ufBate = String(uf||'').trim().toUpperCase() === String(nearest.uf||'').trim().toUpperCase();
     if(!ufBate){
@@ -1963,8 +1996,12 @@
       // (nearest), mas esse ponto pode ser só ruído geométrico (rampa/conector perto de
       // entroncamento que a malha marca com um Tipo que o SNV não confirma ali) — melhor
       // ficar sinalizado (Alerta de Coordenada) e SEM correção confiável do que assumir
-      // Rodovia/UF/Tipo errados com aparência de certeza.
-      return {alerta:'Coordenada fora da UF/rodovia informada (malha)', ufCorrigida: uf, brCorrigida: '', tipoCorrigido: ''};
+      // Rodovia/UF/Tipo errados com aparência de certeza. Mesma mensagem do caso "não achou
+      // nada na malha" (mais acima) — os dois representam a mesma situação de fundo: não dá
+      // pra confirmar com confiança, mantém a Rodovia/UF declaradas. Mesma exceção da
+      // Concebra pro caso "BR-060" (ver comentário acima).
+      const ufAjustada2 = (extractBR(rodovia) === '060' && concessionariaEquivale(concessionariaSelecionada, 'Triunfo Concebra')) ? 'MG' : uf;
+      return {alerta:'Coordenada muito distante da malha desta concessionária — Rodovia/UF mantidas como declaradas', ufCorrigida: ufAjustada2, brCorrigida: '', tipoCorrigido: ''};
     }
     // UF bate — não corrige NADA, nem quando o ponto mais próximo da malha é de outra BR,
     // nem quando esse ponto está longe (malha esparsa ali). Só faz sentido corrigir a
@@ -2226,13 +2263,37 @@
     // mostra o traçado atual dela, sem esse pedaço) e a correção de coordenada erra a
     // BR/UF por achar "longe demais de qualquer ponto da malha".
     const historicoAplicavel = HISTORICO_TRANSFERENCIA_TRECHOS.filter(h => concessionariaEquivale(h.de, concessionariaSelecionada));
+    // A malha (Mapa de trechos concedidos) não foi limpa depois de algumas transferências —
+    // o MESMO ponto geométrico aparece cadastrado com a tag da concessionária ANTIGA
+    // ("Triunfo Concebra") E da concessionária ATUAL ("Way-153"/"Way-262") ao mesmo tempo
+    // (confirmado: 17.485 coordenadas exatamente duplicadas). Sem esse pré-passo, um ponto
+    // que já é território da Way aparecia como "próprio" da Concebra só por causa dessa
+    // sobra de dado — pré-computa o conjunto de coordenadas do(s) dono(s) atual(is) pra
+    // identificar essas duplicatas como NÃO próprias, mesmo vindo com a tag antiga.
+    const paraAtuaisCoords = new Set();
+    if(historicoAplicavel.length){
+      const paraAtuais = new Set(historicoAplicavel.map(h=> normalizeConcessionaria(h.paraAtual)));
+      best.aoa.slice(1).forEach(r=>{
+        if(!r) return;
+        if(!paraAtuais.has(normalizeConcessionaria(r[idx['concession']]))) return;
+        const lat = r[idx['latitude']], lon = r[idx['longitude']];
+        if(typeof lat !== 'number' || typeof lon !== 'number') return;
+        paraAtuaisCoords.add(lat.toFixed(6)+'||'+lon.toFixed(6));
+      });
+    }
     best.aoa.slice(1).forEach(r=>{
       if(!r) return;
       const concession = r[idx['concession']];
       if(!concession) return;
       const rodovia = r[idx['rodovia']], uf = r[idx['uf']];
       if(!rodovia || !uf) return;
-      let pertence = concessionariaEquivale(concession, concessionariaSelecionada);
+      const lat = r[idx['latitude']], lon = r[idx['longitude']];
+      if(typeof lat !== 'number' || typeof lon !== 'number') return;
+      let proprio = concessionariaEquivale(concession, concessionariaSelecionada);
+      // Duplicata exata com um ponto da concessionária atual — não conta como próprio,
+      // mesmo vindo com a tag da concessionária selecionada (é sobra de dado desatualizado).
+      if(proprio && paraAtuaisCoords.has(lat.toFixed(6)+'||'+lon.toFixed(6))) proprio = false;
+      let pertence = proprio || concessionariaEquivale(concession, concessionariaSelecionada);
       if(!pertence && historicoAplicavel.length){
         pertence = historicoAplicavel.some(h=>{
           if(!concessionariaEquivale(concession, h.paraAtual)) return false;
@@ -2242,13 +2303,16 @@
         });
       }
       if(!pertence) return;
-      const lat = r[idx['latitude']], lon = r[idx['longitude']];
-      if(typeof lat !== 'number' || typeof lon !== 'number') return;
       const tipo = r[idx['tipo de trecho']];
       const cx = Math.floor(lat/TRECHO_GRID_CELL_DEG), cy = Math.floor(lon/TRECHO_GRID_CELL_DEG);
       const key = cx+'||'+cy;
       if(!grid.has(key)) grid.set(key, []);
-      grid.get(key).push({lat, lon, rodovia: String(rodovia).trim(), uf: String(uf).trim(), tipo: tipo ? String(tipo).trim() : ''});
+      // proprio=true só quando o ponto é da concessionária SELECIONADA de verdade hoje —
+      // false quando só entrou por causa do histórico de transferência (era dela antes, é
+      // de outra concessionária agora) OU quando é uma duplicata exata de um ponto que já é
+      // da concessionária atual. Usado pra distinguir "essa coordenada bate no território
+      // que ainda é dela" de "só bate no território que já foi transferido".
+      grid.get(key).push({lat, lon, rodovia: String(rodovia).trim(), uf: String(uf).trim(), tipo: tipo ? String(tipo).trim() : '', proprio});
       n++;
     });
     return n ? {grid} : null;
@@ -2258,8 +2322,10 @@
   // achar algo (ou desistir depois de alguns anéis, caso o sinistro esteja bem longe de
   // qualquer trecho desta concessão). Com ufFiltro, só considera pontos daquela UF — usado
   // pra checar primeiro se tem malha da PRÓPRIA UF declarada por perto, antes de comparar
-  // com as outras UFs (evita trocar UF só por causa de divisa de estado).
-  function findNearestTrechoPoint(index, lat, lon, ufFiltro){
+  // com as outras UFs (evita trocar UF só por causa de divisa de estado). Com
+  // soProprio=true, ignora os pontos herdados de transferência histórica — só considera o
+  // que é território atual de verdade da concessionária selecionada.
+  function findNearestTrechoPoint(index, lat, lon, ufFiltro, soProprio){
     if(!index || typeof lat !== 'number' || typeof lon !== 'number') return null;
     const ufNorm = ufFiltro ? String(ufFiltro).trim().toUpperCase() : null;
     const cx = Math.floor(lat/TRECHO_GRID_CELL_DEG), cy = Math.floor(lon/TRECHO_GRID_CELL_DEG);
@@ -2272,6 +2338,7 @@
           if(!pts) continue;
           pts.forEach(p=>{
             if(ufNorm && String(p.uf||'').trim().toUpperCase() !== ufNorm) return;
+            if(soProprio && !p.proprio) return;
             const d2 = (p.lat-lat)*(p.lat-lat) + (p.lon-lon)*(p.lon-lon);
             if(d2 < bestDist2){ bestDist2 = d2; best = p; }
           });
@@ -2900,6 +2967,15 @@
         // texto original), casa com o trecho SNV do BR-101 de verdade só que aparece
         // rotulado como BR-116: um trecho fantasma "BR errado com o range do outro".
         brDeteccao = resolveBrTipo(brCorrigida, concessionariaSelecionada, auxTrechosList).br || resolvidoOriginal.br;
+      } else if(coordAlerta && ufCorrigida && String(ufCorrigida).trim().toUpperCase() !== String(uf).trim().toUpperCase()){
+        // UF foi ajustada mesmo SEM confirmar a rodovia (ex.: "BR-060" declarada não existe
+        // fisicamente em MG, mas não dá pra saber com confiança qual é a rodovia real ali —
+        // só que a UF declarada está errada). Usa a UF ajustada pra decidir se cai em
+        // "considerar trecho atual" (ex.: BR-060/MG não é território atual da Concebra, deve
+        // ser excluído) — sem isso, corrigir só a UF nunca tinha efeito nenhum no filtro de
+        // trecho atual, porque esse bloco inteiro só rodava quando a rodovia TAMBÉM tinha
+        // sido corrigida com confiança.
+        ufDeteccao = ufCorrigida;
       }
 
       // Tipo EFETIVO: parte do texto declarado (resolvidoOriginal.tipo), mas se esse
