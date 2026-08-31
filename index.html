@@ -4151,8 +4151,17 @@
     const datasSinistros = sinistros.map(s=>s.data).filter(Boolean);
     const minData = datasSinistros.length ? new Date(Math.min.apply(null, datasSinistros.map(d=>d.getTime()))) : null;
     const maxData = datasSinistros.length ? new Date(Math.max.apply(null, datasSinistros.map(d=>d.getTime()))) : null;
-    const aj2 = dateStart || minData || new Date(2000,0,1);
-    const ak2 = dateEnd || maxData || new Date(2000,0,2);
+    // "dias" do período de exposição: usa a MENOR e MAIOR data real dos sinistros desta
+    // concessionária (já filtrados pelo período manual, se houver) — não os campos de data
+    // em si. Isso importa porque o período manual (dateStart/dateEnd) costuma ser aplicado
+    // uma vez só, de forma ampla, pra cobrir todas as concessionárias de um lote — mas cada
+    // concessionária tem sua própria janela real de dados dentro desse período (uma pode só
+    // ter começado a operar depois do início do período, outra pode não ter dado até o fim
+    // dele) — usar o período manual fixo pra todas infla ou reduz "dias" artificialmente,
+    // distorcendo a Exposição. Só cai pro período manual (ou num padrão fixo) quando não
+    // sobra sinistro nenhum depois do filtro, como último recurso.
+    const aj2 = minData || dateStart || new Date(2000,0,1);
+    const ak2 = maxData || dateEnd || new Date(2000,0,2);
     const dias = Math.round((ak2.getTime() - aj2.getTime()) / 86400000);
     const kNum = (typeof kValue === 'number' && isFinite(kValue)) ? kValue : 1.645;
 
